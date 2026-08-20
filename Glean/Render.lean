@@ -343,7 +343,7 @@ def globalOrdered (site : Site) (root : String) (src : Bool) : String :=
 def declsPage (site : Site) (root : String) : String :=
   s!"<h1>{kindPill "index"}Declarations</h1>" ++
   s!"<div class=\"toolbar\"><input id=\"search\" placeholder=\"Filter declarations\">{viewSelect [("ordered", "By file"), ("grouped", "Group by definition")]}</div>" ++
-  "<div id=\"listing\">" ++
+  "<div id=\"listing\" data-biglist=\"1\" style=\"display:none\">" ++
   pane "ordered" (globalOrdered site root false) ++
   pane "grouped" (groupedListing site root site.decls (stmtBlock site root) (fun _ => "") "g-") ++
   "</div>"
@@ -391,7 +391,10 @@ def filesPage (site : Site) (root : String) : String :=
     Std.HashMap.ofList (site.topo.toList.zipIdx.map fun (m, i) => (m, i))
   let byTopo (kids : Array (String × TreeNode)) :=
     kids.qsort fun a b => treeMinTopo topoIdx a.2 < treeMinTopo topoIdx b.2
-  let treeHtml := s!"<div class=\"card\">{String.join ((byTopo tree.children).toList.map fun (k, v) => treeRender site root k v byTopo)}</div>"
+  let topKids (kids : Array (String × TreeNode)) :=
+    let (libs, rest) := kids.partition (·.1 == "Libraries")
+    libs ++ byTopo rest
+  let treeHtml := s!"<div class=\"card\">{String.join ((topKids tree.children).toList.map fun (k, v) => treeRender site root k v byTopo)}</div>"
   let flat := s!"<div class=\"card\">{String.join (site.topo.toList.map fun m => s!"<div class=\"decl\" data-name=\"{escHtml m}\">{fileLink site root m} <span class=\"muted\">{declCount site m} declarations</span></div>")}</div>"
   s!"<h1>{kindPill "index"}Files</h1>" ++
   s!"<div class=\"toolbar\"><input id=\"search\" placeholder=\"Filter files\">{viewSelect [("tree", "Tree"), ("topo", "Flat, topological order")]}</div>" ++
@@ -448,10 +451,15 @@ const v=document.getElementById('view');
 if(v){const upd=()=>{for(const el of document.querySelectorAll('[data-viewpane]'))el.style.display=el.dataset.viewpane===v.value?'':'none'};v.onchange=upd;upd()}
 // Filter box: hides [data-name] rows in #listing; prunes and opens tree nodes.
 const s=document.getElementById('search');
+const listing=document.getElementById('listing');
+const big=!!(listing&&listing.dataset.biglist);
+if(big)listing.style.display='none';
 let sTimer;
-if(s)s.oninput=()=>{clearTimeout(sTimer);sTimer=setTimeout(applyFilter,150)};
+if(s)s.oninput=()=>{clearTimeout(sTimer);sTimer=setTimeout(applyFilter,250)};
 function applyFilter(){
   const q=s.value.toLowerCase();
+  if(big&&q.length<3){listing.style.display='none';return}
+  if(big)listing.style.display='';
   for(const el of document.querySelectorAll('#listing [data-name]:not(.block)')){
     const row=el.tagName==='SUMMARY'?el.parentElement:el;
     row.dataset.match=el.dataset.name.toLowerCase().includes(q)?'1':'';
