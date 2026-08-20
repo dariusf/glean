@@ -57,6 +57,7 @@ structure Site where
   modRev : Std.HashMap String (Array String)
   topo : Array String
   slugMap : Std.HashMap String String
+  libRoots : Std.HashSet String := {}
 
 def Site.own (site : Site) (n : String) : Option Decl :=
   site.byName.get? n <|> (site.aliasOwner.get? n).bind (site.byName.get? ·)
@@ -74,7 +75,7 @@ private def dedup (xs : Array String) : Array String := Id.run do
   return out
 
 def Site.build (decls : Array Decl) (moduleImports : Array (String × Array String))
-    (slugMap : Std.HashMap String String) : Site := Id.run do
+    (slugMap : Std.HashMap String String) (libRoots : Std.HashSet String := {}) : Site := Id.run do
   let mut byName : Std.HashMap String Decl := {}
   for d in decls do byName := byName.insert d.name d
   let mut aliasOwner : Std.HashMap String String := {}
@@ -123,7 +124,7 @@ def Site.build (decls : Array Decl) (moduleImports : Array (String × Array Stri
       topo := topo.push m
       done := done.insert m
   return { decls, mods, byName, aliasOwner, incoming,
-           modDeps := modDepsArr, modRev, topo, slugMap }
+           modDeps := modDepsArr, modRev, topo, slugMap, libRoots }
 
 /-! URL helpers (all URLs relative to a `root` prefix) -/
 
@@ -386,7 +387,10 @@ private partial def treeRender (site : Site) (root : String) (name : String)
     s!"<details><summary{dataName}>{label}</summary><div class=\"tree-kids\">{String.join kids}</div></details>"
 
 def filesPage (site : Site) (root : String) : String :=
-  let tree := site.mods.foldl (fun t m => treeInsert t (m.splitOn ".") m) ({} : TreeNode)
+  let tree := site.mods.foldl (fun t m =>
+    let segs := m.splitOn "."
+    let segs := if site.libRoots.contains (segs.headD "") then "Libraries" :: segs else segs
+    treeInsert t segs m) ({} : TreeNode)
   let topoIdx : Std.HashMap String Nat :=
     Std.HashMap.ofList (site.topo.toList.zipIdx.map fun (m, i) => (m, i))
   let byTopo (kids : Array (String × TreeNode)) :=

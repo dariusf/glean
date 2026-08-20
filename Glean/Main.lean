@@ -107,11 +107,6 @@ unsafe def run (args : List String) : IO UInt32 := do
     return buildExit
   -- Read the relevant cached fragments.
   let fragmentsDir : FilePath := ".lake/build/glean/fragments"
-  -- A root covers its own module and, when a matching directory exists, the
-  -- whole subtree (a root like `Heifer.LogRel.Principal` can be both).
-  let rootKinds ← modules.mapM fun root => do
-    let dir : FilePath := root.toString.replace "." "/"
-    pure (root, ← dir.pathExists)
   let mut decls : Array Decl := #[]
   let mut moduleImports : Array (String × Array String) := #[]
   if ← fragmentsDir.pathExists then
@@ -123,7 +118,7 @@ unsafe def run (args : List String) : IO UInt32 := do
       let mod ← match parsed.getObjValAs? String "module" with
         | .ok m => pure m.toName
         | .error e => throw <| IO.userError s!"Invalid wiki fragment {file}: {e}"
-      if rootKinds.any (fun (root, isDir) => root == mod || (isDir && root.isPrefixOf mod)) then
+      if modules.any (fun root => root == mod || root.isPrefixOf mod) then
         let ds ← match parsed.getObjVal? "declarations" with
           | .ok (.arr ds) => pure ds
           | .ok _ => throw <| IO.userError s!"Invalid declarations in {file}"
@@ -136,7 +131,13 @@ unsafe def run (args : List String) : IO UInt32 := do
         moduleImports := moduleImports.push (mod.toString, imports)
   -- Derived data.
   let slugMap ← assignSlugs (decls.map (·.name) ++ dedupModules decls)
-  let site := Site.build decls moduleImports slugMap
+  let mut libRoots : Std.HashSet String := {}
+  for m in dedupModules decls do
+    let top := (m.splitOn ".").headD m
+    if !libRoots.contains top then
+      if !(← FilePath.pathExists (top ++ ".lean")) && !(← FilePath.pathExists top) then
+        libRoots := libRoots.insert top
+  let site := Site.build decls moduleImports slugMap libRoots
   -- Assemble the page list: (path, title, root, body, withGraph).
   let mut pages : Array (FilePath × String × String × (Unit → String) × Bool) := #[]
   pages := pages.push (out / "index.html", "Glean", "./", (fun _ => homePage), true)
