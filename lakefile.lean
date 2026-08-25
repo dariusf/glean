@@ -3,7 +3,7 @@ import Lake
 open Lake DSL
 open System (FilePath)
 
-package glean
+package Glean
 
 require subverso from git
   "https://github.com/leanprover/subverso" @ "52b9dfbd2658408e37ae6e8b72601ddeaaa25a0c"

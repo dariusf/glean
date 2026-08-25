@@ -11,5 +11,5 @@
    "inputRev": "52b9dfbd2658408e37ae6e8b72601ddeaaa25a0c",
    "inherited": false,
    "configFile": "lakefile.lean"}],
- "name": "glean",
+ "name": "Glean",
  "lakeDir": ".lake"}
