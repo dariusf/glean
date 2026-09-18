@@ -415,7 +415,7 @@ def tacticsPage (site : Site) (root : String) : String :=
   s!"<h1>{kindPill "index"}Tactic syntax</h1>" ++ body
 
 def homePage : String :=
-  "<canvas id=\"graph\"></canvas><div id=\"tip\" class=\"tip\"></div>"
+  "<div id=\"graph\"></div>"
 
 /-! Full-page wrapper -/
 
@@ -432,23 +432,37 @@ def wrap (site : Site) (root title body : String) (withGraph : Bool := false) : 
 
 /-! Slim client assets -/
 
-/-- One node per file; edges are the module-level dependency edges (imports
-merged with declaration-derived edges), so every node and edge is real. -/
+/-- Mermaid source for the module dependency graph: one node per module, and
+the transitive reduction of the module-level dependency edges. -/
 def graphJs (site : Site) : String := Id.run do
   let mut idx : Std.HashMap String Nat := {}
   for h : i in [0:site.mods.size] do
     idx := idx.insert site.mods[i] i
-  let mut edges : Array Json := #[]
+  -- Transitive closure of the dependency relation, in topological order so a
+  -- module's dependencies are always resolved before the module itself.
+  let mut closure : Std.HashMap String (Std.HashSet String) := {}
+  for m in site.topo do
+    let mut c : Std.HashSet String := {}
+    for d in (site.modDeps.get? m).getD #[] do
+      c := c.insert d
+      for x in (closure.get? d).getD {} do
+        c := c.insert x
+    closure := closure.insert m c
+  let mut lines : Array String := #["graph TD"]
+  for h : i in [0:site.mods.size] do
+    let m := site.mods[i]
+    lines := lines.push s!"  n{i}[\"{m}\"]"
+    lines := lines.push s!"  click n{i} href \"{fileUrl site "./" m}\""
   for m in site.mods do
     let i := (idx.get? m).getD 0
-    for d in (site.modDeps.get? m).getD #[] do
-      if let some j := idx.get? d then
-        edges := edges.push (Json.arr #[toJson i, toJson j])
-  let nodeJson := Json.arr <| site.mods.map fun m => Json.mkObj [
-    ("n", toJson m),
-    ("c", toJson (site.decls.filter (·.module == m)).size),
-    ("u", toJson (fileUrl site "./" m))]
-  return s!"const GRAPH = {(Json.mkObj [("nodes", nodeJson), ("edges", Json.arr edges)]).compress};\n"
+    let deps := (site.modDeps.get? m).getD #[]
+    for d in deps do
+      -- Drop `d` if it is already reachable through another dependency.
+      let redundant := deps.any fun d' => d' != d && ((closure.get? d').getD {}).contains d
+      if !redundant then
+        if let some j := idx.get? d then
+          lines := lines.push s!"  n{j} --> n{i}"
+  return s!"const GRAPH = {(toJson ("\n".intercalate lines.toList)).compress};\n"
 
 def appJs : String := r##"// View toggles: <select id="view"> shows the matching [data-viewpane].
 const v=document.getElementById('view');
@@ -491,83 +505,16 @@ function applyFilter(){
 }
 // Dependency graph (home page; GRAPH provided by graph.js).
 if(typeof GRAPH!=='undefined'){
-  let c=document.getElementById('graph');
-  let tip=document.getElementById('tip');
-  let ctx=c.getContext('2d'), ratio=devicePixelRatio;
-  c.width=c.clientWidth*ratio;c.height=c.clientHeight*ratio;
-  let W=c.clientWidth,H=c.clientHeight;
-  // Node color by top-level root, radius by declaration count.
-  const COLORS=['#79c0ff','#d29922','#3fb950','#ff7b72','#d2a8ff','#f778ba'];
-  const roots=[...new Set(GRAPH.nodes.map(d=>d.n.split('.')[0]))];
-  let nodes=GRAPH.nodes.map(d=>({...d,x:50+Math.random()*(W-100),y:50+Math.random()*(H-100),vx:0,vy:0,
-    r:3+1.5*Math.sqrt(d.c),col:COLORS[roots.indexOf(d.n.split('.')[0])%COLORS.length]}));
-  let edges=GRAPH.edges;
-  let sc=1,tx=0,ty=0;
-  const pal=()=>({edge:'#5d656d'});
-  function paint(){
-    let p=pal();
-    ctx.setTransform(ratio,0,0,ratio,0,0);ctx.clearRect(0,0,W,H);
-    ctx.setTransform(ratio*sc,0,0,ratio*sc,ratio*tx,ratio*ty);
-    ctx.strokeStyle=p.edge;ctx.globalAlpha=.5;ctx.lineWidth=1/sc;
-    for(const [i,j] of edges){let a=nodes[i],b=nodes[j];ctx.beginPath();ctx.moveTo(a.x,a.y);ctx.lineTo(b.x,b.y);ctx.stroke()}
-    ctx.globalAlpha=1;
-    for(const a of nodes){ctx.beginPath();ctx.fillStyle=a.col;ctx.arc(a.x,a.y,a.r,0,7);ctx.fill()}
-  }
-  // Force-directed layout, animated: edge springs, pairwise repulsion, mild
-  // centering. alpha cools to a stop; interactions reheat it.
-  let alpha=1,userView=false;
-  function fit(){
-    let x0=1e9,x1=-1e9,y0=1e9,y1=-1e9;
-    for(const a of nodes){x0=Math.min(x0,a.x);x1=Math.max(x1,a.x);y0=Math.min(y0,a.y);y1=Math.max(y1,a.y)}
-    const s=Math.min(1.5,(W-70)/Math.max(1,x1-x0),(H-70)/Math.max(1,y1-y0));
-    // Ease toward the fitted view so layout motion doesn't shake the camera.
-    sc+=(s-sc)*0.1;tx+=(W/2-s*(x0+x1)/2-tx)*0.1;ty+=(H/2-s*(y0+y1)/2-ty)*0.1;
-  }
-  function tick(){
-    const REP=1400,SPRING=0.012,LEN=130,CENTER=0.0006,CUT=90000;
-    for(const a of nodes){a.fx=(W/2-a.x)*CENTER;a.fy=(H/2-a.y)*CENTER}
-    for(let i=0;i<nodes.length;i++)for(let j=i+1;j<nodes.length;j++){
-      const a=nodes[i],b=nodes[j];
-      let dx=a.x-b.x,dy=a.y-b.y,d2=dx*dx+dy*dy||1;
-      if(d2<CUT){const w=1-d2/CUT,f=REP/d2*w*w;dx*=f;dy*=f;a.fx+=dx;a.fy+=dy;b.fx-=dx;b.fy-=dy}
-    }
-    for(const [i,j] of edges){
-      const a=nodes[i],b=nodes[j];
-      const dx=b.x-a.x,dy=b.y-a.y,d=Math.sqrt(dx*dx+dy*dy)||1;
-      const f=SPRING*(d-LEN)/d;
-      a.fx+=dx*f;a.fy+=dy*f;b.fx-=dx*f;b.fy-=dy*f;
-    }
-    for(const a of nodes){
-      if(a===drag)continue;
-      a.vx=(a.vx+a.fx*alpha)*0.3;a.vy=(a.vy+a.fy*alpha)*0.3;
-      a.x+=a.vx;a.y+=a.vy;
-    }
-    alpha*=0.99;
-    if(!userView)fit();
-    paint();
-    if(alpha>0.03)requestAnimationFrame(tick);
-  }
-  const reheat=()=>{const cold=alpha<=0.03;alpha=Math.max(alpha,0.3);if(cold)requestAnimationFrame(tick)};
-  requestAnimationFrame(tick);
-  const world=e=>({x:(e.offsetX-tx)/sc,y:(e.offsetY-ty)/sc});
-  const hit=e=>{let w=world(e);return nodes.find(a=>{const r=Math.max(a.r,8/sc);return (a.x-w.x)**2+(a.y-w.y)**2<r*r})};
-  let drag=null,pan=null,moved=0;
-  c.onmousedown=e=>{moved=0;userView=true;let n=hit(e);if(n)drag=n;else pan={x:e.offsetX,y:e.offsetY}};
-  c.onmousemove=e=>{
-    moved+=Math.abs(e.movementX)+Math.abs(e.movementY);
-    if(drag){let w=world(e);drag.x=w.x;drag.y=w.y;drag.vx=0;drag.vy=0;reheat();tip.style.display='none'}
-    else if(pan){tx+=e.offsetX-pan.x;ty+=e.offsetY-pan.y;pan={x:e.offsetX,y:e.offsetY};paint()}
-    else{let n=hit(e);if(n){tip.textContent=n.n+' · '+n.c+' declarations';tip.style.left=(e.clientX+12)+'px';tip.style.top=(e.clientY+12)+'px';tip.style.display='block';c.style.cursor='pointer'}else{tip.style.display='none';c.style.cursor=''}}
-  };
-  c.onmouseup=e=>{if(drag&&moved<4){tip.style.display='none';location.href=drag.u}drag=null;pan=null};
-  c.onmouseleave=()=>{tip.style.display='none';drag=null;pan=null};
-  c.addEventListener('wheel',e=>{
-    e.preventDefault();
-    userView=true;
-    let f=Math.exp(-e.deltaY*0.001), ns=Math.min(10,Math.max(.1,sc*f));f=ns/sc;
-    tx=e.offsetX-(e.offsetX-tx)*f;ty=e.offsetY-(e.offsetY-ty)*f;sc=ns;paint();
-  },{passive:false});
+  const el=document.getElementById('graph');
+  import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs').then(async m=>{
+    const mermaid=m.default;
+    mermaid.initialize({startOnLoad:false,theme:'dark',securityLevel:'loose',maxTextSize:1e6,maxEdges:5000});
+    const {svg,bindFunctions}=await mermaid.render('graphSvg',GRAPH);
+    el.innerHTML=svg;
+    if(bindFunctions)bindFunctions(el);
+  }).catch(e=>{el.textContent='Failed to render graph: '+e});
 }
+
 "##
 
 end Glean
