@@ -86,7 +86,8 @@ propositions, such as an `HProp := State → Prop` of assertions: a definition w
 type is unfolded with the body's own parameters applied on the left, so `⌜P⌝(s) ≜ …`, and its body
 can then be drawn as an inference rule. `latex.collapseSource` (default `true`) set to `false`
 shows the "Source" block expanded. Unmapped
-constants print as `\mathrm{Name}`.
+constants print as `\mathrm{Name}`, and application is written by juxtaposition with a thin space, `f\ap a\ap b`,
+where `\ap` is `\mkern3mu`.
 
 A formula is drawn as a `mathpartir` inference rule when, after dropping its leading `∀` binders,
 it has the shape `P₁ → P₂ → … → Pₙ → C` with at least one premise, none of the `Pᵢ` is referred to
@@ -101,9 +102,11 @@ inside a formula, is always written inline.
 Parentheses are inserted only where the notation would otherwise be ambiguous. Built-in operators
 follow the usual precedence (application binds tightest, then `^`, `·`, `+`, relations such as `=`
 and `≤`, `→`, and finally binders `∀`/`∃`/`λ`), and a subformula is parenthesised when it is looser
-than its context, so `¬(a ∧ b)` keeps its parentheses and `a + b ≤ c` needs none. An argument of an
-ordinary application `f(…)`, or of a template placeholder that is itself enclosed in brackets in the
-template (such as `\mathrm{stable}(#1)` or `\{#1\}`), is already delimited and is never
+than its context, so `¬(a ∧ b)` keeps its parentheses and `a + b ≤ c` needs none. An argument of a
+juxtaposed application is parenthesised unless it is a single symbol or otherwise atomic, so
+`f\ap (a + b)` but `f\ap x\ap s.\mathit{local}`, and an application is itself parenthesised when
+it appears as an argument, `f\ap (g\ap x)`. An argument of a template placeholder that the template
+encloses in brackets (such as `\mathrm{stable}(#1)` or `\{#1\}`) is already delimited and is never
 parenthesised. A template's result is parenthesised when it appears as an argument, or is applied to
 further arguments, unless the template is atomic: it counts as atomic when, outside any brackets,
 it has no spaces or spacing commands and uses at most one placeholder, so `#1.\mathit{local}`,

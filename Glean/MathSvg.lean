@@ -13,6 +13,7 @@ def document (latex : String) : String :=
   "\\usepackage[libertine]{newtxmath}\n" ++
   "\\usepackage{xcolor}\n" ++
   "\\definecolor{fg}{HTML}{C9D1D9}\n" ++
+  "\\newcommand*{\\ap}{\\mkern3mu}\n" ++
   "\\begin{document}\n" ++
   "\\color{fg}$\\displaystyle " ++ latex ++ "$\n" ++
   "\\end{document}\n"

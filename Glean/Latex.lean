@@ -291,17 +291,19 @@ where
           if filteredArgs.isEmpty then return lat
           let arity := templateArity lat
           if arity == 0 then
-            return lat ++ (← argList filteredArgs)
+            return ← application p lat filteredArgs
           else if filteredArgs.size < arity then
-            return fallbackName n ++ (← argList filteredArgs)
+            return ← application p (fallbackName n) filteredArgs
           else
             let delimited := delimitedHoles lat
             let argStrs ← (filteredArgs.extract 0 arity).mapIdxM fun i a =>
               go a (if delimited.contains (i + 1) then quant else atom)
             let body := applyTemplate lat argStrs
             let extra := filteredArgs.extract arity filteredArgs.size
-            let body := if (p == atom || !extra.isEmpty) && !templateAtomic lat then "(" ++ body ++ ")" else body
-            return body ++ (← argList extra)
+            if extra.isEmpty then
+              return if p == atom && !templateAtomic lat then "(" ++ body ++ ")" else body
+            let body := if templateAtomic lat then body else "(" ++ body ++ ")"
+            return ← application p body extra
         else
           match n.toString, filteredArgs.toList with
           | "And", [a, b] => binary p rel "\\wedge" a b
@@ -332,24 +334,24 @@ where
             if e.isAppOfArity ``Exists 2 && (e.getArg! 1).isLambda then
               return maybeParen p quant (← groupAndRenderBinders e false)
             else
-              return fallbackName n ++ (← argList filteredArgs)
+              return ← application p (fallbackName n) filteredArgs
           | "OfNat.ofNat", [_, .lit (.natVal k), _] => return toString k
           | "OfNat.ofNat", [.lit (.natVal k)] => return toString k
           | "Nat.zero", [] => return "0"
           | _, _ =>
-            return fallbackName n ++ (← argList (filteredArgs.filter (!·.isSort)))
+            return ← application p (fallbackName n) (filteredArgs.filter (!·.isSort))
       | _ =>
-        return (← go fn atom) ++ (← argList filteredArgs)
+        return ← application p (← go fn atom) filteredArgs
     | .lit (.natVal k) => return toString k
     | .lit (.strVal s) => return "\\text{``" ++ unicodeToLatex s ++ "''}"
     | .mdata _ e' => go e' p
     | .letE .. => return "\\ldots"
     | .proj .. => return "\\ldots"
 
-  argList (args : Array Expr) : MetaM String := do
-    if args.isEmpty then return ""
-    let strs ← args.mapM (go · quant)
-    return "(" ++ String.intercalate ", " strs.toList ++ ")"
+  application (outer : Precedence) (head : String) (args : Array Expr) : MetaM String := do
+    if args.isEmpty then return head
+    let strs ← args.mapM (go · atom)
+    return maybeParen outer app (String.intercalate "\\ap " (head :: strs.toList))
 
   binary (outer inner : Precedence) (op : String) (a b : Expr) : MetaM String := do
     let aStr ← go a inner
