@@ -74,7 +74,11 @@ still generated.
 ```
 
 `latex.definitions` (default `{}`) maps fully qualified constant names to LaTeX templates, where
-`#1`, `#2`, ... are the explicit arguments. When an argument is a function written as a lambda,
+`#1`, `#2`, ... are the explicit arguments. A constant may instead map to a list of templates; the
+one with the most placeholders that the arguments at hand can fill is used, so
+`["#2{:}\\mathit{listM}(#1)", "#3 \\models #2{:}\\mathit{listM}(#1)"]` typesets `listM a x` as
+`x : listM(a)` and `listM a x s` as `s ⊨ x : listM(a)`. Arguments beyond the chosen template's
+placeholders are juxtaposed after it. When an argument is a function written as a lambda,
 such as the body of a binder-like constant, `#1:x` gives its bound variables separated by thin
 spaces, `#1:x1`, `#1:x2`, ... give them one at a time, and `#1:b` gives its body with those
 variables free, so `hexists (fun v q => P)` with the template `\exists\,#1:x.\ #1:b` is typeset as

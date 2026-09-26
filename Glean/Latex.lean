@@ -14,7 +14,7 @@ structure LatexConfig where
   deriving Inhabited
 
 structure Mapping where
-  definitions : NameMap String := {}
+  definitions : NameMap (Array String) := {}
   metavars : Array String := #[]
   collapseSource : Bool := true
   additionalProps : Array Name := #[]
@@ -150,7 +150,7 @@ partial def applyTemplate (tmpl : String) (pieces : Std.HashMap String String) :
     | c :: cs => loop cs (acc.push c)
   loop tmpl.toList ""
 
-partial def exprToLatex (mapping : NameMap String) (config : LatexConfig) (e : Expr)
+partial def exprToLatex (mapping : NameMap (Array String)) (config : LatexConfig) (e : Expr)
     (outerPrec : Precedence := quant) : MetaM String := do
   let e ← instantiateMVars e
   let rec process (e : Expr) : MetaM String := do
@@ -261,7 +261,7 @@ where
     | .sort .zero => return "\\mathrm{Prop}"
     | .sort (.succ .zero) => return "\\mathrm{Type}"
     | .sort _ => return "\\mathrm{Sort}"
-    | .const n _ => return mapping.find? n |>.getD (fallbackName n)
+    | .const n _ => return (mapping.find? n).bind (·.find? (templateArity · == 0)) |>.getD (fallbackName n)
     | .fvar id =>
       let decl ← id.getDecl
       return binderName decl.userName
@@ -291,13 +291,17 @@ where
       let filteredArgs ← explicitArgs fn args
       match fn with
       | .const n _ =>
-        if let some lat := mapping.find? n then
+        if let some lats := mapping.find? n then
+          let usable := lats.filter (templateArity · ≤ filteredArgs.size)
+          let some lat := usable.foldl (init := none) fun best t =>
+              match best with
+              | some b => if templateArity t > templateArity b then some t else some b
+              | none => some t
+            | return ← application p (fallbackName n) filteredArgs
           if filteredArgs.isEmpty then return lat
           let arity := templateArity lat
           if arity == 0 then
             return ← application p lat filteredArgs
-          else if filteredArgs.size < arity then
-            return ← application p (fallbackName n) filteredArgs
           else
             let delimited := delimitedHoles lat
             let mut pieces : Std.HashMap String String := {}
@@ -388,7 +392,7 @@ def isAuxiliaryConst (owner n : Name) : Bool :=
       (["rec", "recOn", "casesOn", "brecOn", "binductionOn", "below", "ibelow"] : List String).contains s ||
       (s.splitOn "_unsafe_rec").length > 1
 
-def definitionToLatex (mapping : NameMap String) (config : LatexConfig) (n : Name) (levels : List Level)
+def definitionToLatex (mapping : NameMap (Array String)) (config : LatexConfig) (n : Name) (levels : List Level)
     (type value : Expr) : MetaM (Option String) := do
   if !mapping.contains n then return none
   if !value.isLambda then return none
@@ -412,7 +416,7 @@ def ruleLabel (s : String) : String :=
   if s.all (fun (c : Char) => c.toNat < 128) then s.replace "_" "\\_"
   else "$" ++ unicodeToLatex s ++ "$"
 
-def inductiveToLatex (mapping : NameMap String) (config : LatexConfig) (n : Name) (levels : List Level) :
+def inductiveToLatex (mapping : NameMap (Array String)) (config : LatexConfig) (n : Name) (levels : List Level) :
     MetaM (Option String) := do
   let some (.inductInfo iv) := (← getEnv).find? n | return none
   let iType := iv.type.instantiateLevelParams iv.levelParams levels
@@ -444,9 +448,13 @@ def parseMapping (j : Json) : Except String Mapping := do
     let definitions ← match l.getObjVal? "definitions" with
       | .error _ | .ok .null => pure {}
       | .ok (.obj kvs) =>
-        kvs.foldlM (init := ({} : NameMap String)) fun acc k v => do
-          let s ← v.getStr? |>.mapError (fun _ => s!"latex.definitions.{k}: expected a string")
-          return acc.insert k.toName s
+        kvs.foldlM (init := ({} : NameMap (Array String))) fun acc k v => do
+          let err := s!"latex.definitions.{k}: expected a string or an array of strings"
+          let ts ← match v with
+            | .str t => pure #[t]
+            | .arr xs => xs.mapM fun x => x.getStr? |>.mapError (fun _ => err)
+            | _ => throw err
+          return acc.insert k.toName ts
       | .ok _ => throw "latex.definitions: expected an object mapping constant names to templates"
     let metavars ← match l.getObjVal? "metavariables" with
       | .error _ | .ok .null => pure #[]
