@@ -1,6 +1,7 @@
 import Lean
 import SubVerso.Compat
 import SubVerso.Highlighting
+import Glean.Latex
 
 open Lean Elab Frontend System
 open Lean.Elab.Command hiding Context
@@ -100,7 +101,27 @@ private def syntaxDeclJson (mod : Name) (source : String) (n : Name) (kind : Str
     ("aliases", .arr #[])
   ]
 
-private def declJson (env : Environment) (mod : Name) (source : String) (n : Name) : Option Json := do
+private def latexOf (env : Environment) (mapping : Latex.Mapping) (n : Name) (kind : String)
+    (type : Expr) : IO (Option String) := do
+  if mapping.definitions.isEmpty || !(kind == "theorem" || kind == "definition") then return none
+  let typeMentionsMapped := (type.find? (fun e => e.isConst && mapping.definitions.contains e.constName!)).isSome
+  let config : Latex.LatexConfig := { useInferRule := kind == "theorem", metavars := mapping.metavars, additionalProps := mapping.additionalProps }
+  let unfolded : MetaM (Option String) := match kind, env.find? n with
+    | "definition", some (.defnInfo v) =>
+      Latex.definitionToLatex mapping.definitions config n (v.levelParams.map Level.param) v.type v.value
+    | _, _ => pure none
+  let act : MetaM (Option String) := do
+    if let some s ← (try unfolded catch _ => pure none) then return some s
+    if kind == "definition" && !typeMentionsMapped then return none
+    Latex.exprToLatex mapping.definitions config type
+  try
+    let (s, _) ← (act.run' {} {}).toIO { fileName := "<glean>", fileMap := default } { env }
+    return s
+  catch e =>
+    IO.eprintln s!"glean: could not render LaTeX for {n}: {e}"
+    return none
+
+private def declJson (env : Environment) (mod : Name) (source : String) (n : Name) : Option (Json × String × Expr) := do
   if n.isAnonymous || n.hasMacroScopes || n.toString.startsWith "_" then none
   if !isExplicitDeclaration source n then none
   let ci ← env.find? n
@@ -133,7 +154,7 @@ private def declJson (env : Environment) (mod : Name) (source : String) (n : Nam
       -- termination argument of well-founded recursion), not display-worthy edges.
       if kind == "theorem" then ds
       else ds.filter fun d => !(env.find? d matches some (.thmInfo _))
-  some <| Json.mkObj [
+  some <| (·, kind, ci.type) <| Json.mkObj [
     ("name", toJson n.toString),
     ("module", toJson mod.toString),
     ("kind", toJson kind),
@@ -144,7 +165,13 @@ private def declJson (env : Environment) (mod : Name) (source : String) (n : Nam
     ("aliases", namesJson aliases)
   ]
 
-unsafe def extract (mod : Name) (outFile : FilePath) : IO UInt32 := do
+unsafe def extract (mod : Name) (outFile : FilePath) (configFile : Option FilePath) : IO UInt32 := do
+  let mapping ← match configFile with
+    | none => pure {}
+    | some f =>
+      match Json.parse (← IO.FS.readFile f) >>= Latex.parseMapping with
+      | .ok m => pure m
+      | .error e => throw <| IO.userError s!"Invalid config file {f}: {e}"
   initSearchPath (← findSysroot)
   let sp ← SubVerso.Compat.initSrcSearchPath
   let sp : Lean.SearchPath := (sp : List FilePath) ++ [("." : FilePath)]
@@ -173,7 +200,10 @@ unsafe def extract (mod : Name) (outFile : FilePath) : IO UInt32 := do
         SubVerso.Compat.String.Pos.extract contents start stop
       | none => n.toString
     match declJson env mod source n with
-    | some j => declarations := declarations.push j
+    | some (j, kind, type) =>
+      match ← latexOf env mapping n kind type with
+      | some l => declarations := declarations.push (j.setObjVal! "latex" (toJson l))
+      | none => declarations := declarations.push j
     | none =>
       -- Explicitly authored syntax/tactic commands (syntax, macro, elab, notation, ...):
       -- emit one entry per source range, preferring a readable constant name.
@@ -196,8 +226,9 @@ unsafe def extract (mod : Name) (outFile : FilePath) : IO UInt32 := do
 
 unsafe def main (args : List String) : IO UInt32 :=
   match args with
-  | [mod, outFile] => extract mod.toName outFile
-  | _ => IO.eprintln "Usage: glean-extract-module MODULE OUT.json" *> pure 1
+  | [mod, outFile] => extract mod.toName outFile none
+  | [mod, outFile, configFile] => extract mod.toName outFile (some configFile)
+  | _ => IO.eprintln "Usage: glean-extract-module MODULE OUT.json [CONFIG.json]" *> pure 1
 
 end Glean.ExtractModule
 

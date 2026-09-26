@@ -17,6 +17,9 @@ def slugStr (s : String) : String :=
 def escHtml (s : String) : String :=
   ((s.replace "&" "&amp;").replace "<" "&lt;").replace ">" "&gt;"
 
+def escAttr (s : String) : String :=
+  (escHtml s).replace "\"" "&quot;"
+
 def anchorId (n : String) : String :=
   "d-" ++ String.ofList (n.toList.map fun c =>
     if c.isAlphanum || c == '_' || c == '.' then c else '_')
@@ -32,6 +35,8 @@ structure Decl where
   typeDeps : Array String
   valueDeps : Array String
   aliases : Array String
+  latex : Option String := none
+  svg : Option String := none
   deriving Inhabited
 
 def Decl.ofJson (j : Json) : Except String Decl := do
@@ -44,6 +49,7 @@ def Decl.ofJson (j : Json) : Except String Decl := do
     typeDeps := (← j.getObjValAs? (Array String) "typeDeps")
     valueDeps := (← j.getObjValAs? (Array String) "valueDeps")
     aliases := (j.getObjValAs? (Array String) "aliases").toOption.getD #[]
+    latex := (j.getObjValAs? String "latex").toOption
   }
 
 /-- Whole-site derived data, computed once. -/
@@ -58,6 +64,7 @@ structure Site where
   topo : Array String
   slugMap : Std.HashMap String String
   libRoots : Std.HashSet String := {}
+  collapseSource : Bool := true
 
 def Site.own (site : Site) (n : String) : Option Decl :=
   site.byName.get? n <|> (site.aliasOwner.get? n).bind (site.byName.get? ·)
@@ -255,14 +262,24 @@ def hl (src : String) (lm : Std.HashMap String String) : String := Id.run do
 
 def kindPill (k : String) : String := s!"<span class=\"pill\">{escHtml k}</span> "
 
-def srcBlock (site : Site) (root : String) (d : Decl) : String :=
+def codeBlock (site : Site) (root : String) (d : Decl) : String :=
   let src := match d.value with
     | some v => if d.kind != "theorem" then v else d.type
     | none => d.type
   s!"<pre>{hl src (linkMap site root d)}</pre>"
 
+def withMath (site : Site) (root : String) (d : Decl) (code : String) : String :=
+  match d.svg with
+  | some f =>
+    s!"<img class=\"math\" src=\"{root}svg/{f}\" alt=\"{escAttr (d.latex.getD "")}\">" ++
+    s!"<details class=\"src\"{if site.collapseSource then "" else " open"}><summary>Source</summary>{code}</details>"
+  | none => code
+
+def srcBlock (site : Site) (root : String) (d : Decl) : String :=
+  withMath site root d (codeBlock site root d)
+
 def stmtBlock (site : Site) (root : String) (d : Decl) : String :=
-  s!"<pre>{hl d.type (linkMap site root d)}</pre>"
+  withMath site root d s!"<pre>{hl d.type (linkMap site root d)}</pre>"
 
 def depsList (site : Site) (root : String) (ds : Array String) : String :=
   if ds.isEmpty then "<p class=\"muted\">None</p>"
@@ -411,7 +428,7 @@ def tacticsPage (site : Site) (root : String) : String :=
     else String.join <| site.topo.toList.filterMap fun m =>
       let fs := ts.filter (·.module == m)
       if fs.isEmpty then none
-      else some <| s!"<h2>{fileLink site root m}</h2><div class=\"card\">{String.join (fs.toList.map fun d => s!"<div class=\"decl\">{kindPill d.kind}{link site root d.name}<details class=\"src\"><summary>Source</summary>{srcBlock site root d}</details></div>")}</div>"
+      else some <| s!"<h2>{fileLink site root m}</h2><div class=\"card\">{String.join (fs.toList.map fun d => s!"<div class=\"decl\">{kindPill d.kind}{link site root d.name}<details class=\"src\"><summary>Source</summary>{codeBlock site root d}</details></div>")}</div>"
   s!"<h1>{kindPill "index"}Tactic syntax</h1>" ++ body
 
 def homePage (forceDirected : Bool) : String :=

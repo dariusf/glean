@@ -1,6 +1,8 @@
 import Lean
 import Glean.Render
 import Glean.Regex
+import Glean.Latex
+import Glean.MathSvg
 
 open Lean System
 
@@ -27,6 +29,8 @@ details.src>summary{color:#8b949e;font-size:13px}
 .sideitem .pill{font-size:10px}
 @media(max-width:900px){.withside{display:block}.sidenav{position:static;max-height:200px}}
 "##
+
+private def mathCss : String := "img.math{display:block;max-width:100%;margin:10px 0;zoom:1.5}\n"
 
 /-- Assign slugs to `names`, disambiguating case-insensitive collisions
 (macOS/Windows filesystems are case-insensitive) with numeric suffixes. -/
@@ -67,16 +71,42 @@ private def pruneDir (dir : FilePath) (keep : Std.HashSet String) : IO Unit := d
     if !keep.contains entry.fileName then
       IO.FS.removeDirAll entry.path
 
+private def pruneFiles (dir : FilePath) (keep : Std.HashSet String) : IO Unit := do
+  if !(← dir.pathExists) then return
+  if keep.isEmpty then IO.FS.removeDirAll dir; return
+  for entry in ← dir.readDir do
+    if !keep.contains entry.fileName then
+      if ← entry.path.isDir then IO.FS.removeDirAll entry.path else IO.FS.removeFile entry.path
+
 private def usage : String := "Usage: lake exe glean MODULE [MODULE ...] [--output DIR] [--config FILE]\nThe default output directory is .lake/build/glean/site.\nThe default config file is glean.json (optional).\nExample: lake exe glean Examples.Prover.ExtractDefs"
+
+private def field [FromJson α] (j : Json) (k : String) (d : α) : Except String α :=
+  match j.getObjVal? k with
+  | .ok .null | .error _ => pure d
+  | .ok v => (fromJson? v).mapError (s!"{k}: " ++ ·)
 
 structure GraphConfig where
   forceDirected : Bool := false
   ignoreModules : Array String := #[]
-  deriving FromJson, ToJson, Inhabited
+  deriving ToJson, Inhabited
+
+instance : FromJson GraphConfig where
+  fromJson? j := do
+    let d : GraphConfig := {}
+    return {
+      forceDirected := ← field j "forceDirected" d.forceDirected
+      ignoreModules := ← field j "ignoreModules" d.ignoreModules }
 
 structure Config where
   graph : GraphConfig := {}
-  deriving FromJson, ToJson, Inhabited
+  latex : Option Json := none
+  deriving ToJson, Inhabited
+
+instance : FromJson Config where
+  fromJson? j := do
+    return {
+      graph := ← field j "graph" ({} : GraphConfig)
+      latex := ← field j "latex" none }
 
 def readConfig (path : FilePath) (explicit : Bool) : IO Config := do
   if !(← path.pathExists) then
@@ -103,6 +133,21 @@ unsafe def run (args : List String) : IO UInt32 := do
   let (out, modules, cfgPath) := parse args
   if modules.isEmpty then IO.eprintln usage; return 1
   let config ← readConfig (cfgPath.getD "glean.json") cfgPath.isSome
+  let latexMapping ← match config.latex with
+    | some j =>
+      match Latex.parseMapping (Json.mkObj [("latex", j)]) with
+      | .ok m => pure m
+      | .error e => throw (IO.userError s!"Invalid config: {e}")
+    | none => pure {}
+  let latexJson := if latexMapping.definitions.isEmpty then none else config.latex.map fun
+    | .obj kvs => .obj (kvs.erase "collapseSource")
+    | j => j
+  let latexCfg ← match latexJson with
+    | some j =>
+      let p : FilePath := ".lake/build/glean/latex.json"
+      discard <| writeIfChanged p (Json.mkObj [("latex", j)]).compress
+      pure (some (← IO.FS.realPath p))
+    | none => pure none
   let forceDirected := config.graph.forceDirected
   let moduleFilter ← match ModuleFilter.parse config.graph.ignoreModules with
     | .ok f => pure f
@@ -125,6 +170,7 @@ unsafe def run (args : List String) : IO UInt32 := do
   let build ← IO.Process.spawn {
     cmd := "lake"
     args := #["build"] ++ targets.map (fun m => s!"{m}:glean")
+    env := #[("GLEAN_CONFIG", latexCfg.map toString)]
   }
   let buildExit ← build.wait
   if buildExit != 0 then
@@ -154,6 +200,47 @@ unsafe def run (args : List String) : IO UInt32 := do
           | .error e => throw <| IO.userError s!"Invalid declaration in {file}: {e}"
         let imports := (parsed.getObjValAs? (Array String) "imports").toOption.getD #[]
         moduleImports := moduleImports.push (mod.toString, imports)
+  if latexCfg.isSome then
+    let svgCache : FilePath := ".lake/build/glean/svg"
+    IO.FS.createDirAll svgCache
+    let mut pending : Array (String × String) := #[]
+    let mut seen : Std.HashSet String := {}
+    let mut cached := 0
+    for d in decls do
+      if let some l := d.latex then
+        if !seen.contains l then
+          seen := seen.insert l
+          if ← (svgCache / MathSvg.fileName l).pathExists then cached := cached + 1
+          else pending := pending.push (d.name, l)
+    let done ← IO.mkRef 0
+    let failed ← IO.mkRef 0
+    let stdout ← IO.getStdout
+    let mut jobs : Std.HashMap String (Task (Except IO.Error String)) := {}
+    for (n, l) in pending do
+      jobs := jobs.insert l <| ← IO.asTask do
+        let (svg, ok) ← MathSvg.compile svgCache n l
+        if !ok then failed.modify (· + 1)
+        let k ← done.modifyGet fun k => (k + 1, k + 1)
+        let snippet := (String.intercalate " " (l.splitOn "\n")).take 70
+        stdout.putStrLn s!"[latex] {k}/{pending.size} {MathSvg.fileName l}  {snippet}"
+        stdout.flush
+        return svg
+    for l in seen do
+      if !jobs.contains l then
+        jobs := jobs.insert l (Task.pure (.ok (← IO.FS.readFile (svgCache / MathSvg.fileName l))))
+    let mut keep : Std.HashSet String := {}
+    for (l, t) in jobs do
+      let svg ← IO.ofExcept t.get
+      let name := MathSvg.fileName l
+      keep := keep.insert name
+      discard <| writeIfChanged (out / "svg" / name) svg
+    pruneFiles (out / "svg") keep
+    let nFailed ← failed.get
+    IO.println s!"LaTeX: {pending.size - nFailed} compiled, {nFailed} failed, {cached} cached"
+    decls := decls.map fun d => { d with svg := d.latex.map MathSvg.fileName }
+  else
+    decls := decls.map fun d => { d with latex := none }
+    pruneFiles (out / "svg") {}
   -- Derived data.
   let slugMap ← assignSlugs (decls.map (·.name) ++ dedupModules decls)
   let mut libRoots : Std.HashSet String := {}
@@ -162,7 +249,7 @@ unsafe def run (args : List String) : IO UInt32 := do
     if !libRoots.contains top then
       if !(← FilePath.pathExists (top ++ ".lean")) && !(← FilePath.pathExists top) then
         libRoots := libRoots.insert top
-  let site := Site.build decls moduleImports slugMap libRoots
+  let site := { Site.build decls moduleImports slugMap libRoots with collapseSource := latexMapping.collapseSource }
   -- Assemble the page list: (path, title, root, body, withGraph).
   let mut pages : Array (FilePath × String × String × (Unit → String) × Bool) := #[]
   pages := pages.push (out / "index.html", "Glean", "./", (fun _ => homePage forceDirected), true)
@@ -184,7 +271,7 @@ unsafe def run (args : List String) : IO UInt32 := do
   for (path, t) in tasks do
     if ← writeIfChanged path t.get then written := written + 1 else skipped := skipped + 1
   for (path, content) in [
-      ((out / "style.css" : FilePath), styleCss),
+      ((out / "style.css" : FilePath), styleCss ++ (if latexCfg.isSome then mathCss else "")),
       (out / "app.js", appJs),
       (out / "graph.js", graphJs (site.restrictModules moduleFilter.keeps) forceDirected),
       (out / ".nojekyll", "")] do

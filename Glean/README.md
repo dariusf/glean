@@ -60,6 +60,60 @@ still generated.
   last matching pattern wins, as in `.gitignore`. Patterns are unanchored unless they use `^`/`$`.
   Hidden modules are contracted, so dependencies through them are still drawn.
 
+```json
+{
+  "latex": {
+    "definitions": {
+      "Heifer.triple": "\\{#1\\}\\,#2\\,\\{#3\\}",
+      "Heifer.entails": "#1 \\vdash #2"
+    },
+    "metavariables": ["σ", "Γ"],
+    "collapseSource": true
+  }
+}
+```
+
+`latex.definitions` (default `{}`) maps fully qualified constant names to LaTeX templates, where
+`#1`, `#2`, ... are the explicit arguments. `latex.metavariables` (default `[]`) lists name
+prefixes; a bound variable such as `σ1` whose name is a listed prefix followed by digits is typeset as
+the prefix with the digits as a subscript. When non-empty, theorem statements (and definitions whose type
+mentions a mapped constant) are rendered as math, and the source moves into a collapsed "Source" block.
+A definition that has its own template is instead shown unfolded, as its template applied to its
+parameters, then `≜`, then the rendered body; definitions by pattern matching, recursion, or with
+auxiliary proof terms fall back to showing their type.
+`latex.additionalProps` (default `[]`) lists fully qualified names of types to treat like
+propositions, such as an `HProp := State → Prop` of assertions: a definition whose body has such a
+type is unfolded with the body's own parameters applied on the left, so `⌜P⌝(s) ≜ …`, and its body
+can then be drawn as an inference rule. `latex.collapseSource` (default `true`) set to `false`
+shows the "Source" block expanded. Unmapped
+constants print as `\mathrm{Name}`.
+
+A formula is drawn as a `mathpartir` inference rule when, after dropping its leading `∀` binders,
+it has the shape `P₁ → P₂ → … → Pₙ → C` with at least one premise, none of the `Pᵢ` is referred to
+by a later premise or by `C` (that is, they are plain hypotheses rather than dependent arguments),
+and at least one of the `Pᵢ` or `C` is a proposition. The premises are stacked above the line and
+`C` is below it; the dropped `∀` variables are read as implicitly quantified, as is usual in rule
+notation. Anything else, including a conclusion that is a plain type such as `Nat`, is written
+inline with `\to`. This applies to theorem statements and to the body of an unfolded definition
+when that body is a proposition; the body of a non-propositional definition, and everything nested
+inside a formula, is always written inline.
+
+Parentheses are inserted only where the notation would otherwise be ambiguous. Built-in operators
+follow the usual precedence (application binds tightest, then `^`, `·`, `+`, relations such as `=`
+and `≤`, `→`, and finally binders `∀`/`∃`/`λ`), and a subformula is parenthesised when it is looser
+than its context, so `¬(a ∧ b)` keeps its parentheses and `a + b ≤ c` needs none. An argument of an
+ordinary application `f(…)`, or of a template placeholder that is itself enclosed in brackets in the
+template (such as `\mathrm{stable}(#1)` or `\{#1\}`), is already delimited and is never
+parenthesised. A template's result is parenthesised when it appears as an argument, or is applied to
+further arguments, unless the template is atomic: it counts as atomic when, outside any brackets,
+it has no spaces or spacing commands and uses at most one placeholder, so `#1.\mathit{local}`,
+`\mathtt{List}(#1)` and `\{#1\}` are atomic while `#1 \cup #2` and `#1{:}#2` are not. Write
+templates without outer parentheses and let the renderer add them.
+
+Rendering needs `latex` (with `amsmath`, `amssymb`,
+`mathpartir`, `xcolor`, `standalone`) and `dvisvgm` on `PATH`; SVGs are cached in
+`.lake/build/glean/svg/` by content hash, and failures render as a "LaTeX error" placeholder.
+
 ### All ways to invoke glean
 
 - `lake exe glean ROOT [ROOT ...] [--output DIR] [--config FILE]` — the normal entry point: builds fragments for

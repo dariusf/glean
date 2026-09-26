@@ -9,7 +9,7 @@ require subverso from git
   "https://github.com/leanprover/subverso" @ "52b9dfbd2658408e37ae6e8b72601ddeaaa25a0c"
 
 lean_lib Glean where
-  roots := #[`Glean.Main, `Glean.ExtractModule, `Glean.Render, `Glean.Regex]
+  roots := #[`Glean.Main, `Glean.ExtractModule, `Glean.Render, `Glean.Regex, `Glean.Latex, `Glean.MathSvg]
 
 lean_exe «glean» where
   root := `Glean.Main
@@ -27,10 +27,16 @@ module_facet glean mod : FilePath := withRegisterJob s!"{mod.name}:glean" do
       let outFile := mod.filePath (ws.root.buildDir / "glean" / "fragments") "json"
       addTrace (← fetchFileTrace exeFile)
       addTrace (← fetchFileTrace oleanFile)
+      let cfg : Option FilePath ← do
+        let some p ← IO.getEnv "GLEAN_CONFIG" | pure none
+        let p := FilePath.mk p
+        if ← p.pathExists then pure (some p) else pure none
+      if let some cfg := cfg then
+        addTrace (.ofHash (← computeTextFileHash cfg) cfg.toString)
       buildFileUnlessUpToDate' (text := true) outFile do
         proc {
           cmd := exeFile.toString
-          args := #[mod.name.toString, outFile.toString]
+          args := #[mod.name.toString, outFile.toString] ++ (cfg.map (·.toString)).toArray
           env := ← getAugmentedEnv
         }
       pure outFile
