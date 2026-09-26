@@ -36,6 +36,18 @@ where
 
 private def namesJson (xs : Array Name) : Json := .arr (xs.map (toJson <| toString ·))
 
+private def leadingComments (contents : String) (fileMap : FileMap) (start : String.Pos.Raw) : String.Pos.Raw := Id.run do
+  let mut line := (fileMap.toPosition start).line
+  while line > 1 do
+    let prev := fileMap.ofPosition ⟨line - 1, 0⟩
+    let text := (SubVerso.Compat.String.Pos.extract contents prev (fileMap.ofPosition ⟨line, 0⟩)).trimAscii.toString
+    if text.startsWith "--" then line := line - 1 else break
+  fileMap.ofPosition ⟨line, 0⟩
+
+private def stripLineComments (source : String) : String :=
+  let ls := (source.splitOn "\n").dropWhile fun l => l.trimAscii.toString.startsWith "--" || l.trimAscii.isEmpty
+  String.intercalate "\n" ls
+
 private def statementSource (source : String) : String :=
   -- Cut at the first `:=` outside brackets; a `:=` inside `(M := M)` or a
   -- structure instance is part of the statement.
@@ -60,10 +72,13 @@ private def statementSource (source : String) : String :=
 private def isExplicitDeclaration (source : String) (n : Name) : Bool :=
   let words := SubVerso.Compat.String.splitToList source (·.isWhitespace) |>.filter (!·.isEmpty)
   let short := n.getString!
+  let declaresName (ident : String) : Bool :=
+    let head := ident.takeWhile fun c => c.isAlphanum || c == '_' || c == '.' || c == '\'' || c == '!' || c == '?' || c.toNat > 127
+    head.toString == short || head.toString.endsWith ("." ++ short)
   let rec go : List String → Bool
     | kind :: ident :: rest =>
       if (["def", "theorem", "lemma", "abbrev", "opaque", "inductive", "structure", "class"] : List String).contains kind &&
-          (ident == short || ident.startsWith (short ++ "(")) then true
+          declaresName ident then true
       else go (ident :: rest)
     | _ => false
   go words
@@ -72,6 +87,7 @@ private def isExplicitDeclaration (source : String) (n : Name) : Bool :=
 wiki kind: "tactic" when it declares tactic-category syntax, "syntax" otherwise. -/
 private def syntaxCommandKind (source : String) : Option String :=
   -- Skip a leading doc comment, which is part of the declaration range.
+  let source := stripLineComments source
   let body := if source.trimAscii.toString.startsWith "/-" then
       match source.splitOn "-/" with
       | _ :: rest => String.intercalate "-/" rest
@@ -195,7 +211,7 @@ unsafe def extract (mod : Name) (outFile : FilePath) (configFile : Option FilePa
       declRangeExt.find? (level := .exported) env n
     let source := match ranges? with
       | some ranges =>
-        let start := fileMap.ofPosition ranges.range.pos
+        let start := leadingComments contents fileMap (fileMap.ofPosition ranges.range.pos)
         let stop := fileMap.ofPosition ranges.range.endPos
         SubVerso.Compat.String.Pos.extract contents start stop
       | none => n.toString
