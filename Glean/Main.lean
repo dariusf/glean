@@ -66,7 +66,19 @@ private def pruneDir (dir : FilePath) (keep : Std.HashSet String) : IO Unit := d
     if !keep.contains entry.fileName then
       IO.FS.removeDirAll entry.path
 
-private def usage : String := "Usage: lake exe glean MODULE [MODULE ...] [--output DIR] [--force-directed]\nThe default output directory is .lake/build/glean/site.\nExample: lake exe glean Examples.Prover.ExtractDefs"
+private def usage : String := "Usage: lake exe glean MODULE [MODULE ...] [--output DIR] [--config FILE]\nThe default output directory is .lake/build/glean/site.\nThe default config file is glean.json (optional).\nExample: lake exe glean Examples.Prover.ExtractDefs"
+
+structure Config where
+  forceDirected : Bool := false
+  deriving FromJson, ToJson, Inhabited
+
+def readConfig (path : FilePath) (explicit : Bool) : IO Config := do
+  if !(← path.pathExists) then
+    if explicit then throw (IO.userError s!"Config file not found: {path}")
+    return {}
+  match Json.parse (← IO.FS.readFile path) >>= fromJson? with
+  | .ok c => pure c
+  | .error e => throw (IO.userError s!"Invalid config file {path}: {e}")
 
 unsafe def run (args : List String) : IO UInt32 := do
   -- Roots may be dotted module names or filesystem paths
@@ -76,14 +88,16 @@ unsafe def run (args : List String) : IO UInt32 := do
     let s := if s.endsWith "/" then s.dropEnd 1 else s
     (s.replace "/" ".").toName
   let rec parse (xs : List String) (out : FilePath := ".lake/build/glean/site") (mods : Array Name := #[])
-      (fd : Bool := false) :=
+      (cfg : Option FilePath := none) :=
     match xs with
-    | "--output" :: p :: rest => parse rest p mods fd
-    | "--force-directed" :: rest => parse rest out mods true
-    | x :: rest => parse rest out (mods.push (normRoot x)) fd
-    | [] => (out, mods, fd)
-  let (out, modules, forceDirected) := parse args
+    | "--output" :: p :: rest => parse rest p mods cfg
+    | "--config" :: p :: rest => parse rest out mods (some p)
+    | x :: rest => parse rest out (mods.push (normRoot x)) cfg
+    | [] => (out, mods, cfg)
+  let (out, modules, cfgPath) := parse args
   if modules.isEmpty then IO.eprintln usage; return 1
+  let config ← readConfig (cfgPath.getD "glean.json") cfgPath.isSome
+  let forceDirected := config.forceDirected
   -- A root with no `.lean` file of its own but a matching directory
   -- (e.g. `Indirection.Prototype`) is not a Lake target; expand it to the
   -- modules in its subtree for the build step.

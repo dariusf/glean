@@ -36,11 +36,21 @@ filesystem path (`Indirection/Prototype`, `Heifer.lean`). A root covers the modu
 the subtree of the matching directory, or both at once (e.g. `Heifer`, which has a `Heifer.lean`
 and a `Heifer/` directory). A directory root with no corresponding `.lean` file (e.g.
 `Indirection.Prototype`) works too: it is expanded to the modules in its subtree. `--output DIR` overrides the output location (default
-`.lake/build/glean/site`).
+`.lake/build/glean/site`). `--config FILE` selects a JSON config file (default `glean.json` in the
+working directory, optional).
+
+### Configuration
+
+```json
+{ "forceDirected": true }
+```
+
+- `forceDirected` (default `false`): render the home graph with the interactive force-directed
+  canvas instead of Mermaid.
 
 ### All ways to invoke glean
 
-- `lake exe glean ROOT [ROOT ...] [--output DIR]` — the normal entry point: builds fragments for
+- `lake exe glean ROOT [ROOT ...] [--output DIR] [--config FILE]` — the normal entry point: builds fragments for
   the roots, then assembles the site from every cached fragment matching a root. Note the site
   contains *only* the requested roots; regenerating with a smaller root set (e.g. just a
   subdirectory) prunes pages outside it, so use `--output` for scoped side builds:
