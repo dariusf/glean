@@ -92,10 +92,17 @@ then `≜`, then the rendered body (definitions by pattern matching, recursion, 
 proof terms fall back to showing their type); otherwise, if its type mentions a mapped constant, its
 type is shown. A definition with neither, such as a predicate you have not given notation for, keeps
 its plain source, so add a template for every definition you want typeset.
-`latex.additionalProps` (default `[]`) lists fully qualified names of types to treat like
-propositions, such as an `HProp := State → Prop` of assertions: a definition whose body has such a
-type is unfolded with the body's own parameters applied on the left, so `⌜P⌝\ap s ≜ …`, and its body
-can then be drawn as an inference rule. `latex.collapseSource` (default `true`) set to `false`
+`latex.additionalProps` (default `{}`) names types to treat like propositions, such as an
+`HProp := State → Prop` of assertions, and gives each an application template:
+`{"TypeHL.HProp": "#2 \\models #1"}`. Whenever an expression whose declared result type is such a
+type is applied to further arguments, after any definition template has been filled, the remaining
+arguments are laid out by that template with `#1` the expression and `#2`, `#3`, ... the arguments,
+consuming as many as it names, so `hasType v t s` becomes `s ⊨ v:t` and a variable `H` applied to
+`s` becomes `s ⊨ H`. The type is matched by name as written in the head's signature, without
+unfolding, so `State → Prop` written out does not match `HProp`. A definition whose body has such a
+type is unfolded with the body's own parameters applied on the left, so `s ⊨ ⌜P⌝ ≜ …`, and its body
+can then be drawn as an inference rule. A plain list of type names is also accepted and means
+application is written by juxtaposition. `latex.collapseSource` (default `true`) set to `false`
 shows the "Source" block expanded. Unmapped
 constants print as `\mathrm{Name}`, and application is written by juxtaposition with a thin space, `f\ap a\ap b`,
 where `\ap` is `\mkern3mu`.

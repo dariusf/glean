@@ -11,6 +11,7 @@ structure LatexConfig where
   printImplicits : Bool := false
   metavars : Array String := #[]
   additionalProps : Array Name := #[]
+  applications : NameMap String := {}
   deriving Inhabited
 
 structure Mapping where
@@ -18,6 +19,7 @@ structure Mapping where
   metavars : Array String := #[]
   collapseSource : Bool := true
   additionalProps : Array Name := #[]
+  applications : NameMap String := {}
 
 def cleanName (n : Name) : Name :=
   let n := n.eraseMacroScopes
@@ -297,11 +299,11 @@ where
               match best with
               | some b => if templateArity t > templateArity b then some t else some b
               | none => some t
-            | return ← application p (fallbackName n) filteredArgs
+            | return ← application p (fallbackName n) filteredArgs (fn := fn) (raw := args)
           if filteredArgs.isEmpty then return lat
           let arity := templateArity lat
           if arity == 0 then
-            return ← application p lat filteredArgs
+            return ← application p lat filteredArgs (fn := fn) (raw := args)
           else
             let delimited := delimitedHoles lat
             let mut pieces : Std.HashMap String String := {}
@@ -322,13 +324,13 @@ where
                 for j in [0:names.size] do
                   pieces := pieces.insert (k ++ ":x" ++ toString (j + 1)) names[j]!
             if missingBinder then
-              return ← application p (fallbackName n) filteredArgs
+              return ← application p (fallbackName n) filteredArgs (fn := fn) (raw := args)
             let body := applyTemplate lat pieces
             let extra := filteredArgs.extract arity filteredArgs.size
             if extra.isEmpty then
               return if p == atom && !templateAtomic lat then "(" ++ body ++ ")" else body
             let body := if templateAtomic lat then body else "(" ++ body ++ ")"
-            return ← application p body extra
+            return ← application p body extra (fn := fn) (raw := args) (consumed := arity)
         else
           match n.toString, filteredArgs.toList with
           | "And", [a, b] => binary p rel "\\wedge" a b
@@ -359,24 +361,66 @@ where
             if e.isAppOfArity ``Exists 2 && (e.getArg! 1).isLambda then
               return maybeParen p quant (← groupAndRenderBinders e false)
             else
-              return ← application p (fallbackName n) filteredArgs
+              return ← application p (fallbackName n) filteredArgs (fn := fn) (raw := args)
           | "OfNat.ofNat", [_, .lit (.natVal k), _] => return toString k
           | "OfNat.ofNat", [.lit (.natVal k)] => return toString k
           | "Nat.zero", [] => return "0"
           | _, _ =>
-            return ← application p (fallbackName n) (filteredArgs.filter (!·.isSort))
+            return ← application p (fallbackName n) (filteredArgs.filter (!·.isSort)) (fn := fn) (raw := args)
       | _ =>
-        return ← application p (← go fn atom) filteredArgs
+        return ← application p (← go fn atom) filteredArgs (fn := fn) (raw := args)
     | .lit (.natVal k) => return toString k
     | .lit (.strVal s) => return "\\text{``" ++ unicodeToLatex s ++ "''}"
     | .mdata _ e' => go e' p
     | .letE .. => return "\\ldots"
     | .proj .. => return "\\ldots"
 
-  application (outer : Precedence) (head : String) (args : Array Expr) : MetaM String := do
+  declaredResultType (fn : Expr) (raw : Array Expr) (explicitConsumed : Nat) : MetaM Expr := do
+    let fnType ← inferType fn
+    let rec loop (type : Expr) (i : Nat) (seen : Nat) : Expr :=
+      if seen ≥ explicitConsumed then type
+      else match type with
+        | .forallE _ _ body bi =>
+          if i < raw.size then loop (body.instantiate1 raw[i]!) (i + 1) (if bi.isExplicit then seen + 1 else seen)
+          else type
+        | .mdata _ t => loop t i seen
+        | _ => type
+    return loop fnType 0 0
+
+  application (outer : Precedence) (head : String) (args : Array Expr)
+      (fn : Option Expr := none) (raw : Array Expr := #[]) (consumed : Nat := 0) : MetaM String := do
     if args.isEmpty then return head
-    let strs ← args.mapM (go · atom)
-    return maybeParen outer app (String.intercalate "\\ap " (head :: strs.toList))
+    let form ← match fn with
+      | some f => do
+        let mut found : Option (Nat × String) := none
+        for j in [0:args.size] do
+          if found.isSome then break
+          let rt := (← declaredResultType f raw (consumed + j)).consumeMData
+          if rt.getAppFn.isConst then
+            if let some t := config.applications.find? rt.getAppFn.constName! then
+              if templateArity t ≥ 2 && j + templateArity t - 1 ≤ args.size then
+                found := some (j, t)
+        pure found
+      | none => pure none
+    match form with
+    | some (j, t) =>
+      let leading ← (args.extract 0 j).mapM (go · atom)
+      let head := if j == 0 then head else
+        "(" ++ String.intercalate "\\ap " (head :: leading.toList) ++ ")"
+      let k := templateArity t - 1
+      let mut pieces : Std.HashMap String String := {}
+      pieces := pieces.insert "1" head
+      for i in [0:k] do
+        pieces := pieces.insert (toString (i + 2)) (← go args[j + i]! atom)
+      let body := applyTemplate t pieces
+      let rest := args.extract (j + k) args.size
+      if rest.isEmpty then
+        return if outer == atom && !templateAtomic t then "(" ++ body ++ ")" else body
+      let body := if templateAtomic t then body else "(" ++ body ++ ")"
+      return ← application outer body rest
+    | none =>
+      let strs ← args.mapM (go · atom)
+      return maybeParen outer app (String.intercalate "\\ap " (head :: strs.toList))
 
   binary (outer inner : Precedence) (op : String) (a b : Expr) : MetaM String := do
     let aStr ← go a inner
@@ -464,11 +508,17 @@ def parseMapping (j : Json) : Except String Mapping := do
       | .error _ | .ok .null => pure true
       | .ok (.bool b) => pure b
       | .ok _ => throw "latex.collapseSource: expected a boolean"
-    let additionalProps ← match l.getObjVal? "additionalProps" with
-      | .error _ | .ok .null => pure #[]
-      | .ok (.arr xs) => xs.mapM fun x => (x.getStr? |>.mapError (fun _ => "latex.additionalProps: expected an array of strings")).map String.toName
-      | .ok _ => throw "latex.additionalProps: expected an array of strings"
-    return { definitions, metavars, collapseSource, additionalProps }
+    let (additionalProps, applications) ← match l.getObjVal? "additionalProps" with
+      | .error _ | .ok .null => pure (#[], {})
+      | .ok (.arr xs) => do
+        let names ← xs.mapM fun x => (x.getStr? |>.mapError (fun _ => "latex.additionalProps: expected an array of strings")).map String.toName
+        pure (names, {})
+      | .ok (.obj kvs) =>
+        kvs.foldlM (init := ((#[] : Array Name), ({} : NameMap String))) fun (names, apps) k v => do
+          let t ← v.getStr? |>.mapError (fun _ => s!"latex.additionalProps.{k}: expected a string")
+          return (names.push k.toName, apps.insert k.toName t)
+      | .ok _ => throw "latex.additionalProps: expected an array of type names or an object mapping type names to templates"
+    return { definitions, metavars, collapseSource, additionalProps, applications }
   | .ok _ => throw "latex: expected an object with definitions and metavariables"
 
 end Glean.Latex

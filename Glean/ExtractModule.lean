@@ -121,7 +121,7 @@ private def latexOf (env : Environment) (mapping : Latex.Mapping) (n : Name) (ki
     (type : Expr) : IO (Option String) := do
   if mapping.definitions.isEmpty || !(kind == "theorem" || kind == "definition" || kind == "inductive") then return none
   let typeMentionsMapped := (type.find? (fun e => e.isConst && mapping.definitions.contains e.constName!)).isSome
-  let config : Latex.LatexConfig := { useInferRule := kind == "theorem", metavars := mapping.metavars, additionalProps := mapping.additionalProps }
+  let config : Latex.LatexConfig := { useInferRule := kind == "theorem", metavars := mapping.metavars, additionalProps := mapping.additionalProps, applications := mapping.applications }
   let unfolded : MetaM (Option String) := match kind, env.find? n with
     | "definition", some (.defnInfo v) =>
       Latex.definitionToLatex mapping.definitions config n (v.levelParams.map Level.param) v.type v.value
