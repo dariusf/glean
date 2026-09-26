@@ -42,11 +42,23 @@ working directory, optional).
 ### Configuration
 
 ```json
-{ "forceDirected": true }
+{
+  "graph": {
+    "forceDirected": true,
+    "ignoreModules": ["^Mathlib", "\\.Test$", "!^Mathlib\\.Core"]
+  }
+}
 ```
+
+Options under `graph` affect only the home-page dependency graph; pages for hidden modules are
+still generated.
 
 - `forceDirected` (default `false`): render the home graph with the interactive force-directed
   canvas instead of Mermaid.
+- `ignoreModules` (default `[]`): regular expressions, applied in order to module names shown on
+  the home graph; a matching module is hidden, or shown again if the pattern starts with `!`. The
+  last matching pattern wins, as in `.gitignore`. Patterns are unanchored unless they use `^`/`$`.
+  Hidden modules are contracted, so dependencies through them are still drawn.
 
 ### All ways to invoke glean
 

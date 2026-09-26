@@ -9,7 +9,7 @@ require subverso from git
   "https://github.com/leanprover/subverso" @ "52b9dfbd2658408e37ae6e8b72601ddeaaa25a0c"
 
 lean_lib Glean where
-  roots := #[`Glean.Main, `Glean.ExtractModule, `Glean.Render]
+  roots := #[`Glean.Main, `Glean.ExtractModule, `Glean.Render, `Glean.Regex]
 
 lean_exe «glean» where
   root := `Glean.Main

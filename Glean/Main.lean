@@ -1,5 +1,6 @@
 import Lean
 import Glean.Render
+import Glean.Regex
 
 open Lean System
 
@@ -68,8 +69,13 @@ private def pruneDir (dir : FilePath) (keep : Std.HashSet String) : IO Unit := d
 
 private def usage : String := "Usage: lake exe glean MODULE [MODULE ...] [--output DIR] [--config FILE]\nThe default output directory is .lake/build/glean/site.\nThe default config file is glean.json (optional).\nExample: lake exe glean Examples.Prover.ExtractDefs"
 
-structure Config where
+structure GraphConfig where
   forceDirected : Bool := false
+  ignoreModules : Array String := #[]
+  deriving FromJson, ToJson, Inhabited
+
+structure Config where
+  graph : GraphConfig := {}
   deriving FromJson, ToJson, Inhabited
 
 def readConfig (path : FilePath) (explicit : Bool) : IO Config := do
@@ -97,7 +103,10 @@ unsafe def run (args : List String) : IO UInt32 := do
   let (out, modules, cfgPath) := parse args
   if modules.isEmpty then IO.eprintln usage; return 1
   let config ← readConfig (cfgPath.getD "glean.json") cfgPath.isSome
-  let forceDirected := config.forceDirected
+  let forceDirected := config.graph.forceDirected
+  let moduleFilter ← match ModuleFilter.parse config.graph.ignoreModules with
+    | .ok f => pure f
+    | .error e => throw (IO.userError s!"Invalid config: {e}")
   -- A root with no `.lean` file of its own but a matching directory
   -- (e.g. `Indirection.Prototype`) is not a Lake target; expand it to the
   -- modules in its subtree for the build step.
@@ -177,7 +186,7 @@ unsafe def run (args : List String) : IO UInt32 := do
   for (path, content) in [
       ((out / "style.css" : FilePath), styleCss),
       (out / "app.js", appJs),
-      (out / "graph.js", graphJs site forceDirected),
+      (out / "graph.js", graphJs (site.restrictModules moduleFilter.keeps) forceDirected),
       (out / ".nojekyll", "")] do
     if ← writeIfChanged path content then written := written + 1 else skipped := skipped + 1
   -- Prune pages for renamed/removed declarations and modules.

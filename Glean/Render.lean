@@ -483,6 +483,25 @@ def mermaidGraphJs (site : Site) : String := Id.run do
           lines := lines.push s!"  n{j} --> n{i}"
   return s!"const GRAPH = {(toJson ("\n".intercalate lines.toList)).compress};\n"
 
+/-- Restrict the module graph to modules satisfying `keep`, contracting hidden
+modules so dependencies that pass through them are preserved. -/
+def Site.restrictModules (site : Site) (keep : String → Bool) : Site := Id.run do
+  let mut contracted : Std.HashMap String (Array String) := {}
+  for m in site.topo do
+    let mut seen : Std.HashSet String := {}
+    let mut out := #[]
+    for d in (site.modDeps.get? m).getD #[] do
+      let targets := if keep d then #[d] else (contracted.get? d).getD #[]
+      for t in targets do
+        if !seen.contains t then
+          seen := seen.insert t
+          out := out.push t
+    contracted := contracted.insert m out
+  { site with
+    mods := site.mods.filter keep
+    topo := site.topo.filter keep
+    modDeps := contracted }
+
 def graphJs (site : Site) (forceDirected : Bool) : String :=
   if forceDirected then forceGraphJs site else mermaidGraphJs site
 
