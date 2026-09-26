@@ -69,6 +69,7 @@ private def identToLatex (s : String) : String :=
 
 inductive Precedence where
   | atom | app | pow | mul | add | rel | arrow | quant
+  | custom (n : Nat)
   deriving Inhabited, BEq
 
 open Precedence
@@ -82,78 +83,200 @@ def Precedence.toNat : Precedence → Nat
   | rel => 50
   | arrow => 40
   | quant => 30
+  | custom n => n
 
 def maybeParen (outer inner : Precedence) (s : String) : String :=
   if inner.toNat < outer.toNat then "(" ++ s ++ ")" else s
 
-partial def templateArity (tmpl : String) : Nat :=
-  let rec loop (chars : List Char) (best : Nat) : Nat :=
-    match chars with
-    | [] => best
-    | '#' :: cs =>
-      let (digits, rest) := cs.span (·.isDigit)
-      if digits.isEmpty then loop cs best else loop rest (max best (String.ofList digits).toNat!)
-    | _ :: cs => loop cs best
-  loop tmpl.toList 0
+structure Hole where
+  idx : Nat
+  sel : String := ""
+  prec : Nat := 0
+  deriving Inhabited
 
-partial def templateAtomic (tmpl : String) : Bool :=
-  let rec loop (chars : List Char) (depth : Nat) (holes : Nat) : Bool :=
-    match chars with
-    | [] => holes ≤ 1
-    | '\\' :: c :: cs =>
-      if c == '{' || c == '(' || c == '[' then loop cs (depth + 1) holes
-      else if c == '}' || c == ')' || c == ']' then loop cs (depth - 1) holes
-      else if depth == 0 && (c == ',' || c == ';' || c == ' ' || c == '!') then false
-      else loop cs depth holes
-    | c :: cs =>
-      if c == '{' || c == '(' || c == '[' then loop cs (depth + 1) holes
-      else if c == '}' || c == ')' || c == ']' then loop cs (depth - 1) holes
-      else if depth > 0 then loop cs depth holes
-      else if c == ' ' || c == '~' then false
-      else if c == '#' then loop cs depth (holes + 1)
-      else loop cs depth holes
-  loop tmpl.toList 0 0
+inductive TemplatePiece where
+  | lit (s : String)
+  | hole (h : Hole)
+  deriving Inhabited
 
-partial def delimitedHoles (tmpl : String) : Array Nat :=
-  let opens := ['(', '[', '{']
-  let closes := [')', ']', '}']
-  let rec loop (chars : List Char) (prevOpen : Bool) (acc : Array Nat) : Array Nat :=
-    match chars with
-    | [] => acc
-    | '#' :: cs =>
-      let (digits, rest) := cs.span (·.isDigit)
-      if digits.isEmpty then loop cs false acc
-      else
-        let n := (String.ofList digits).toNat!
-        let nextClose := match rest with
-          | '\\' :: c :: _ => closes.contains c
-          | c :: _ => closes.contains c
-          | [] => false
-        loop rest false (if prevOpen && nextClose then acc.push n else acc)
-    | '\\' :: c :: cs => loop cs (opens.contains c) acc
-    | c :: cs => loop cs (opens.contains c) acc
-  loop tmpl.toList false #[]
+structure Template where
+  prec : Nat := 100
+  pieces : Array TemplatePiece := #[]
+  bare : Bool := false
+  deriving Inhabited
 
-partial def applyTemplate (tmpl : String) (pieces : Std.HashMap String String) : String :=
-  let rec loop (chars : List Char) (acc : String) : String :=
-    match chars with
-    | [] => acc
-    | '#' :: cs =>
-      let (digits, rest) := cs.span (·.isDigit)
-      if digits.isEmpty then loop cs (acc ++ "#")
-      else
-        let key := String.ofList digits
-        let (key, rest) := match rest with
-          | ':' :: r =>
-            let (sel, r') := r.span (·.isAlphanum)
-            if sel.isEmpty then (key, rest) else (key ++ ":" ++ String.ofList sel, r')
-          | _ => (key, rest)
-        loop rest (acc ++ ((pieces.get? key).getD ("#" ++ key)))
-    | c :: cs => loop cs (acc.push c)
-  loop tmpl.toList ""
+def Template.arity (t : Template) : Nat :=
+  t.pieces.foldl (init := 0) fun m p => match p with
+    | .hole h => max m h.idx
+    | .lit _ => m
+
+def Template.holes (t : Template) : Array Hole :=
+  t.pieces.filterMap fun
+    | .hole h => some h
+    | .lit _ => none
+
+private inductive Tok where
+  | ch (c : Char)
+  | hole (idx : Nat) (sel : String) (prec : Option Nat)
+  deriving Inhabited
+
+private partial def tokenize (chars : List Char) (acc : Array Tok) : Array Tok :=
+  match chars with
+  | [] => acc
+  | '#' :: cs =>
+    let (digits, rest) := cs.span Char.isDigit
+    if digits.isEmpty then tokenize cs (acc.push (.ch '#'))
+    else
+      let (sel, rest) := match rest with
+        | ':' :: c :: r =>
+          if c.isAlpha then
+            let (w, r') := (c :: r).span Char.isAlphanum
+            (String.ofList w, r')
+          else ("", rest)
+        | _ => ("", rest)
+      let (prec, rest) := match rest with
+        | ':' :: c :: r =>
+          if c.isDigit then
+            let (d, r') := (c :: r).span Char.isDigit
+            (some (String.ofList d).toNat!, r')
+          else (none, rest)
+        | _ => (none, rest)
+      tokenize rest (acc.push (.hole (String.ofList digits).toNat! sel prec))
+  | c :: cs => tokenize cs (acc.push (.ch c))
+
+def parseTemplate (src : String) : Template := Id.run do
+  let chars := src.toList
+  let (explicit, chars) := match chars with
+    | '@' :: cs =>
+      match cs.span Char.isDigit with
+      | (d@(_ :: _), ' ' :: r) => (some (String.ofList d).toNat!, r)
+      | _ => (none, chars)
+    | _ => (none, chars)
+  let toks := tokenize chars #[]
+  let n := toks.size
+  let mut openEnd := Array.replicate n false
+  let mut closeStart := Array.replicate n false
+  let mut transparent := Array.replicate n false
+  let mut spacing := Array.replicate n false
+  let mut topHole := Array.replicate n false
+  let mut stack : List Bool := []
+  let mut depth := 0
+  let mut topSep := false
+  let mut argBrace := false
+  let mut i := 0
+  while i < n do
+    let wasArg := argBrace
+    argBrace := false
+    match toks[i]! with
+    | .hole .. =>
+      if depth == 0 then topHole := topHole.set! i true
+      i := i + 1
+    | .ch '\\' =>
+      match toks[i + 1]? with
+      | some (.ch c) =>
+        if c.isAlpha then
+          let mut j := i + 1
+          let mut word := ""
+          while j < n do
+            match toks[j]! with
+            | .ch d =>
+              if d.isAlpha then
+                word := word.push d
+                j := j + 1
+              else break
+            | _ => break
+          if word == "quad" || word == "qquad" then
+            for k in [i:j] do spacing := spacing.set! k true
+            if depth == 0 then topSep := true
+          if let some (.ch ' ') := toks[j]? then j := j + 1
+          argBrace := true
+          i := j
+        else
+          if c == '{' then
+            stack := true :: stack
+            depth := depth + 1
+            openEnd := openEnd.set! (i + 1) true
+          else if c == '}' then
+            match stack with
+            | b :: r =>
+              stack := r
+              if b then depth := depth - 1
+            | [] => pure ()
+            closeStart := closeStart.set! i true
+          else if c == ',' || c == ';' || c == ':' || c == '!' || c == ' ' then
+            spacing := (spacing.set! i true).set! (i + 1) true
+            if depth == 0 then topSep := true
+          i := i + 2
+      | _ => i := i + 1
+    | .ch c =>
+      if c == '{' then
+        let visible := wasArg
+        stack := visible :: stack
+        if visible then
+          depth := depth + 1
+          openEnd := openEnd.set! i true
+        else transparent := transparent.set! i true
+      else if c == '(' || c == '[' then
+        stack := true :: stack
+        depth := depth + 1
+        openEnd := openEnd.set! i true
+      else if c == '}' || c == ')' || c == ']' then
+        let visible := match stack with
+          | b :: _ => b || c != '}'
+          | [] => c != '}'
+        match stack with
+        | b :: r =>
+          stack := r
+          if b then depth := depth - 1
+        | [] => pure ()
+        if visible then closeStart := closeStart.set! i true
+        else transparent := transparent.set! i true
+      else if c == ' ' || c == '~' then
+        spacing := spacing.set! i true
+        if depth == 0 then topSep := true
+      else if c == '_' || c == '^' then
+        argBrace := true
+      i := i + 1
+  let content := (List.range n).filter fun k => !transparent[k]!
+  let first := content.head?
+  let last := content.getLast?
+  let isHoleAt (k : Option Nat) : Bool := match k.bind (toks[·]?) with
+    | some (.hole ..) => true
+    | _ => false
+  let topHoles := (topHole.filter id).size
+  let delimited := !topSep && ((!isHoleAt first && !isHoleAt last) || topHoles ≤ 1)
+  let prec := explicit.getD (if delimited then 100 else 50)
+  let before (k : Nat) : Bool := Id.run do
+    let mut j := k
+    while j > 0 && spacing[j - 1]! do j := j - 1
+    return j > 0 && openEnd[j - 1]!
+  let after (k : Nat) : Bool := Id.run do
+    let mut j := k + 1
+    while j < n && spacing[j]! do j := j + 1
+    return j < n && closeStart[j]!
+  let mut pieces : Array TemplatePiece := #[]
+  let mut buf := ""
+  for k in [0:n] do
+    match toks[k]! with
+    | .ch c => buf := buf.push c
+    | .hole idx sel hp =>
+      if !buf.isEmpty then
+        pieces := pieces.push (.lit buf)
+        buf := ""
+      let edge := some k == first || some k == last
+      let dflt := if before k && after k then 0 else if prec == 100 && !edge then 0 else min 100 (prec + 1)
+      pieces := pieces.push (.hole { idx, sel, prec := hp.getD dflt })
+  if !buf.isEmpty then pieces := pieces.push (.lit buf)
+  let bare := explicit.isNone && match toks with
+    | #[.hole _ "" none] => true
+    | _ => false
+  return { prec, pieces, bare }
+
+def templateArity (tmpl : String) : Nat :=
+  (parseTemplate tmpl).arity
 
 partial def exprToLatex (mapping : NameMap (Array String)) (config : LatexConfig) (e : Expr)
-    (outerPrec : Precedence := quant) : MetaM String := do
+    (outerPrec : Precedence := custom 0) : MetaM String := do
   let e ← instantiateMVars e
   let rec process (e : Expr) : MetaM String := do
     match e with
@@ -174,8 +297,8 @@ partial def exprToLatex (mapping : NameMap (Array String)) (config : LatexConfig
         if prems.isEmpty || isNat || (!anyPremProp && !concIsProp) then
           go e outerPrec
         else
-          let premStrs ← prems.mapM (go · quant)
-          let concStr ← go conc quant
+          let premStrs ← prems.mapM (go · (custom 0))
+          let concStr ← go conc (custom 0)
           return "\\inferrule{" ++ String.intercalate " \\\\\\\\ " premStrs ++ "}{" ++ concStr ++ "}"
       else
         go e outerPrec
@@ -235,11 +358,11 @@ where
         let items ← groups.reverse.mapM fun (names, dom) => do
           let namesStr := String.intercalate "\\," names
           if config.printTypes then
-            return "(" ++ namesStr ++ " : " ++ (← go dom quant) ++ ")"
+            return "(" ++ namesStr ++ " : " ++ (← go dom (custom 0)) ++ ")"
           else
             return namesStr
         let symbol := if isForall then "\\forall " else "\\exists "
-        return symbol ++ String.intercalate "\\," items ++ ",\\ " ++ (← go body quant)
+        return symbol ++ String.intercalate "\\," items ++ ",\\ " ++ (← go body (custom 0))
     loop e []
 
   explicitArgs (fn : Expr) (args : Array Expr) : MetaM (Array Expr) := do
@@ -263,7 +386,10 @@ where
     | .sort .zero => return "\\mathrm{Prop}"
     | .sort (.succ .zero) => return "\\mathrm{Type}"
     | .sort _ => return "\\mathrm{Sort}"
-    | .const n _ => return (mapping.find? n).bind (·.find? (templateArity · == 0)) |>.getD (fallbackName n)
+    | .const n _ =>
+      match (mapping.find? n).bind (·.find? (templateArity · == 0)) with
+      | some t => renderTemplate (parseTemplate t) (fun _ => pure "") p
+      | none => return fallbackName n
     | .fvar id =>
       let decl ← id.getDecl
       return binderName decl.userName
@@ -273,14 +399,13 @@ where
       if e.bindingBody!.hasLooseBVar 0 then
         return maybeParen p quant (← groupAndRenderBinders e true)
       else
-        let domStr ← go e.bindingDomain! arrow
+        let domStr ← go e.bindingDomain! (custom (arrow.toNat + 1))
         let bodyStr ← go e.bindingBody! arrow
-        let domStr := if e.bindingDomain!.isForall then "(" ++ domStr ++ ")" else domStr
         return maybeParen p arrow (domStr ++ " \\to " ++ bodyStr)
     | .lam binderName' domain body bi =>
       let res ← withLocalDecl binderName' bi domain fun fv => do
-        let domStr ← go domain quant
-        let bodyStr ← go (body.instantiate1 fv) quant
+        let domStr ← go domain (custom 0)
+        let bodyStr ← go (body.instantiate1 fv) (custom 0)
         let vStr := binderName binderName'
         if config.printTypes then
           return "\\lambda " ++ vStr ++ " : " ++ domStr ++ ".\\ " ++ bodyStr
@@ -299,38 +424,16 @@ where
               match best with
               | some b => if templateArity t > templateArity b then some t else some b
               | none => some t
-            | return ← application p (fallbackName n) filteredArgs (fn := fn) (raw := args)
-          if filteredArgs.isEmpty then return lat
-          let arity := templateArity lat
-          if arity == 0 then
-            return ← application p lat filteredArgs (fn := fn) (raw := args)
-          else
-            let delimited := delimitedHoles lat
-            let mut pieces : Std.HashMap String String := {}
-            let mut missingBinder := false
-            for i in [0:arity] do
-              let a := filteredArgs[i]!
-              let k := toString (i + 1)
-              pieces := pieces.insert k (← go a (if delimited.contains (i + 1) then quant else atom))
-              if (lat.splitOn ("#" ++ k ++ ":")).length > 1 then
-                if !a.isLambda then missingBinder := true
-                let (names, inner) ← lambdaTelescope a fun fvars b => do
-                  let names ← fvars.mapM fun fv => do
-                    let decl ← fv.fvarId!.getDecl
-                    pure (binderName decl.userName)
-                  pure (names, ← go b quant)
-                pieces := pieces.insert (k ++ ":x") (String.intercalate "\\," names.toList)
-                pieces := pieces.insert (k ++ ":b") inner
-                for j in [0:names.size] do
-                  pieces := pieces.insert (k ++ ":x" ++ toString (j + 1)) names[j]!
-            if missingBinder then
-              return ← application p (fallbackName n) filteredArgs (fn := fn) (raw := args)
-            let body := applyTemplate lat pieces
-            let extra := filteredArgs.extract arity filteredArgs.size
-            if extra.isEmpty then
-              return if p == atom && !templateAtomic lat then "(" ++ body ++ ")" else body
-            let body := if templateAtomic lat then body else "(" ++ body ++ ")"
-            return ← application p body extra (fn := fn) (raw := args) (consumed := arity)
+            | return ← application p (fun _ => pure (fallbackName n)) filteredArgs (fn := fn) (raw := args)
+          let tmpl := parseTemplate lat
+          let arity := tmpl.arity
+          let missingBinder := tmpl.holes.any fun h =>
+            !h.sel.isEmpty && !((filteredArgs[h.idx - 1]?.map (·.isLambda)).getD true)
+          if missingBinder then
+            return ← application p (fun _ => pure (fallbackName n)) filteredArgs (fn := fn) (raw := args)
+          let used := filteredArgs.extract 0 arity
+          return ← application p (renderTemplate tmpl (argHole used)) (filteredArgs.extract arity filteredArgs.size)
+            (fn := fn) (raw := args) (consumed := arity)
         else
           match n.toString, filteredArgs.toList with
           | "And", [a, b] => binary p rel "\\wedge" a b
@@ -355,20 +458,20 @@ where
           | "HSub.hSub", [_, _, _, _, a, b] => binary p add "-" a b
           | "HMul.hMul", [a, b] => binary p mul "\\cdot" a b
           | "HMul.hMul", [_, _, _, _, a, b] => binary p mul "\\cdot" a b
-          | "Prod.mk", [a, b] => return "(" ++ (← go a quant) ++ ", " ++ (← go b quant) ++ ")"
-          | "Prod.mk", [_, _, a, b] => return "(" ++ (← go a quant) ++ ", " ++ (← go b quant) ++ ")"
+          | "Prod.mk", [a, b] => return "(" ++ (← go a (custom 0)) ++ ", " ++ (← go b (custom 0)) ++ ")"
+          | "Prod.mk", [_, _, a, b] => return "(" ++ (← go a (custom 0)) ++ ", " ++ (← go b (custom 0)) ++ ")"
           | "Exists", _ =>
             if e.isAppOfArity ``Exists 2 && (e.getArg! 1).isLambda then
               return maybeParen p quant (← groupAndRenderBinders e false)
             else
-              return ← application p (fallbackName n) filteredArgs (fn := fn) (raw := args)
+              return ← application p (fun _ => pure (fallbackName n)) filteredArgs (fn := fn) (raw := args)
           | "OfNat.ofNat", [_, .lit (.natVal k), _] => return toString k
           | "OfNat.ofNat", [.lit (.natVal k)] => return toString k
           | "Nat.zero", [] => return "0"
           | _, _ =>
-            return ← application p (fallbackName n) (filteredArgs.filter (!·.isSort)) (fn := fn) (raw := args)
+            return ← application p (fun _ => pure (fallbackName n)) (filteredArgs.filter (!·.isSort)) (fn := fn) (raw := args)
       | _ =>
-        return ← application p (← go fn atom) filteredArgs (fn := fn) (raw := args)
+        return ← application p (go fn) filteredArgs (fn := fn) (raw := args)
     | .lit (.natVal k) => return toString k
     | .lit (.strVal s) => return "\\text{``" ++ unicodeToLatex s ++ "''}"
     | .mdata _ e' => go e' p
@@ -387,40 +490,60 @@ where
         | _ => type
     return loop fnType 0 0
 
-  application (outer : Precedence) (head : String) (args : Array Expr)
+  renderTemplate (t : Template) (hole : Hole → MetaM String) (p : Precedence) : MetaM String := do
+    if t.bare then
+      if let #[.hole h] := t.pieces then return ← hole { h with prec := p.toNat }
+    let mut out := ""
+    for piece in t.pieces do
+      match piece with
+      | .lit s => out := out ++ s
+      | .hole h => out := out ++ (← hole h)
+    return maybeParen p (custom t.prec) out
+
+  argHole (args : Array Expr) (h : Hole) : MetaM String := do
+    let some a := args[h.idx - 1]? | return "#" ++ toString h.idx
+    if h.sel.isEmpty then return ← go a (custom h.prec)
+    lambdaTelescope a fun fvars b => do
+      let names ← fvars.mapM fun fv => return binderName (← fv.fvarId!.getDecl).userName
+      if h.sel == "x" then return String.intercalate "\\," names.toList
+      if h.sel == "b" then return ← go b (custom h.prec)
+      if h.sel.startsWith "x" then
+        if let some k := (h.sel.drop 1).toString.toNat? then
+          if let some nm := names[k - 1]? then return nm
+      return "#" ++ toString h.idx ++ ":" ++ h.sel
+
+  application (outer : Precedence) (head : Precedence → MetaM String) (args : Array Expr)
       (fn : Option Expr := none) (raw : Array Expr := #[]) (consumed : Nat := 0) : MetaM String := do
-    if args.isEmpty then return head
+    if args.isEmpty then return ← head outer
     let form ← match fn with
       | some f => do
-        let mut found : Option (Nat × String) := none
+        let mut found : Option (Nat × Template) := none
         for j in [0:args.size] do
           if found.isSome then break
           let rt := (← declaredResultType f raw (consumed + j)).consumeMData
           if rt.getAppFn.isConst then
-            if let some t := config.applications.find? rt.getAppFn.constName! then
-              if templateArity t ≥ 2 && j + templateArity t - 1 ≤ args.size then
+            if let some src := config.applications.find? rt.getAppFn.constName! then
+              let t := parseTemplate src
+              if t.arity ≥ 2 && j + t.arity - 1 ≤ args.size then
                 found := some (j, t)
         pure found
       | none => pure none
     match form with
     | some (j, t) =>
-      let leading ← (args.extract 0 j).mapM (go · atom)
-      let head := if j == 0 then head else
-        "(" ++ String.intercalate "\\ap " (head :: leading.toList) ++ ")"
-      let k := templateArity t - 1
-      let mut pieces : Std.HashMap String String := {}
-      pieces := pieces.insert "1" head
-      for i in [0:k] do
-        pieces := pieces.insert (toString (i + 2)) (← go args[j + i]! atom)
-      let body := applyTemplate t pieces
-      let rest := args.extract (j + k) args.size
-      if rest.isEmpty then
-        return if outer == atom && !templateAtomic t then "(" ++ body ++ ")" else body
-      let body := if templateAtomic t then body else "(" ++ body ++ ")"
-      return ← application outer body rest
+      let leading := args.extract 0 j
+      let head' : Precedence → MetaM String := if j == 0 then head else fun q => do
+        let h ← head app
+        let ls ← leading.mapM (go · atom)
+        return maybeParen q app (String.intercalate "\\ap " (h :: ls.toList))
+      let k := t.arity - 1
+      let slots := args.extract j (j + k)
+      let hole (h : Hole) : MetaM String :=
+        if h.idx == 1 then head' (custom h.prec) else argHole slots { h with idx := h.idx - 1 }
+      application outer (renderTemplate t hole) (args.extract (j + k) args.size)
     | none =>
+      let h ← head app
       let strs ← args.mapM (go · atom)
-      return maybeParen outer app (String.intercalate "\\ap " (head :: strs.toList))
+      return maybeParen outer app (String.intercalate "\\ap " (h :: strs.toList))
 
   binary (outer inner : Precedence) (op : String) (a b : Expr) : MetaM String := do
     let aStr ← go a inner

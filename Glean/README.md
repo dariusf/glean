@@ -74,7 +74,8 @@ still generated.
 ```
 
 `latex.definitions` (default `{}`) maps fully qualified constant names to LaTeX templates, where
-`#1`, `#2`, ... are the explicit arguments. A constant may instead map to a list of templates; the
+`#1`, `#2`, ... are the explicit arguments. A template may also carry precedence levels, `@N ` in front and `#n:N` on a
+placeholder, which control where parentheses go; see the paragraph on parentheses below. A constant may instead map to a list of templates; the
 one with the most placeholders that the arguments at hand can fill is used, so
 `["#2{:}\\mathit{listM}(#1)", "#3 \\models #2{:}\\mathit{listM}(#1)"]` typesets `listM a x` as
 `x : listM(a)` and `listM a x s` as `s ⊨ x : listM(a)`. Arguments beyond the chosen template's
@@ -123,19 +124,74 @@ parameters and any binders that later binders or the conclusion depend on are re
 quantified; the remaining hypotheses become the rule's premises, and the constructor's result type
 is its conclusion. Inductive types that are not propositions are shown as source only.
 
-Parentheses are inserted only where the notation would otherwise be ambiguous. Built-in operators
-follow the usual precedence (application binds tightest, then `^`, `·`, `+`, relations such as `=`
-and `≤`, `→`, and finally binders `∀`/`∃`/`λ`), and a subformula is parenthesised when it is looser
-than its context, so `¬(a ∧ b)` keeps its parentheses and `a + b ≤ c` needs none. An argument of a
-juxtaposed application is parenthesised unless it is a single symbol or otherwise atomic, so
-`f\ap (a + b)` but `f\ap x\ap s.\mathit{local}`, and an application is itself parenthesised when
-it appears as an argument, `f\ap (g\ap x)`. An argument of a template placeholder that the template
-encloses in brackets (such as `\mathrm{stable}(#1)` or `\{#1\}`) is already delimited and is never
-parenthesised. A template's result is parenthesised when it appears as an argument, or is applied to
-further arguments, unless the template is atomic: it counts as atomic when, outside any brackets,
-it has no spaces or spacing commands and uses at most one placeholder, so `#1.\mathit{local}`,
-`\mathtt{List}(#1)` and `\{#1\}` are atomic while `#1 \cup #2` and `#1{:}#2` are not. Write
-templates without outer parentheses and let the renderer add them.
+Parentheses are inserted only where the notation would otherwise be ambiguous, using precedence
+levels from 0 (loosest) to 100 (tightest), as in Lean. Built-in notation uses 100 for symbols and
+bracketed forms, 90 for juxtaposed application, 80 for `^`, 70 for `·`, 60 for `+` and `-`, 50 for
+relations such as `=`, `≤`, `∧` and `∨`, 40 for `→`, and 30 for the binders `∀`, `∃` and `λ`, whose
+bodies extend as far right as possible. Every position in a formula asks for a minimum level, and a
+subterm is parenthesised exactly when its own level is lower than that: an argument of a juxtaposed
+application asks for 100, so `f\ap (a + b)` and `f\ap (g\ap x)` but `f\ap x\ap s.\mathit{local}`;
+`¬` takes a level-100 argument, so `¬(a ∧ b)`; and `a + b ≤ c` needs none.
+
+Templates take part in the same scheme. Precedence annotations are optional and usually
+unnecessary: every template and placeholder has a default, so a configuration without any is valid.
+The defaults are:
+
+- A template that starts and ends with literal text, or that has a single placeholder outside
+  brackets and no spaces or spacing commands (`~`, `\,`, `\;`, `\ `) outside brackets, is tightly
+  bound (level 100). `\ulcorner #1\urcorner`, `\mathrm{stable}(#1)`, `\{#1\}`,
+  `\mathtt{List}(#1)` and `#1.\mathit{local}` never need annotation. A placeholder inside such a
+  template is never parenthesised; one at its edge, such as `#1` in `#1.\mathit{local}`, asks for
+  100 like an application argument.
+- Any other template, such as an infix operator `#1 \cup #2` or a judgement `#1, #2 \vDash #3`,
+  gets the middle level 50, and its edge placeholders ask for 51. An argument that is itself such
+  a template is therefore parenthesised. That is always safe but can be redundant.
+- A placeholder immediately enclosed by brackets in the template, as in `f(#1)` or `\{#1\}`, asks
+  for 0 and is never parenthesised.
+
+To override a default, start the template with `@N ` (an at-sign, the level, and a space) to set its
+own level, and write `#n:N` (or `#n:x:N` and `#n:b:N` with the binder selectors) to set the level a
+placeholder asks for. Annotate only where two operator-like templates nest, or where a binder's body
+should extend to the right. Examples, in the order one typically adds them:
+
+```json
+"TypeHL.hasType": "@70 #1{:}#2",
+"TypeHL.conj":    "@35 #1:36 \\wedge #2:35",
+"TypeHL.disj":    "@30 #1:31 \\vee #2:30",
+"TypeHL.sep":     "@40 #1:41~\\mathtt{*}~#2:40",
+"TypeHL.hexists": "@30 \\exists\\,#1:x.\\ #1:b:30",
+"TypeHL.entails": "@25 #1:26 \\vdash #2:26",
+"Union.union":    "@65 #1:65 \\cup #2:66"
+```
+
+- The typing form at 70 sits above the connectives, so `v{:}a ∧ q{:}b` needs no parentheses,
+  whereas with the default 50 each side would be wrapped.
+- `∧` at 35 with the right placeholder at 35 and the left at 36 is right-associative: `A ∧ B ∧ C`
+  needs no parentheses while `(A ∧ B) ∧ C` keeps them. `∨` at 30 sits below `∧`, so
+  `A ∧ B ∨ C` reads as `(A ∧ B) ∨ C` without any. Separating conjunction at 40 binds tighter than
+  both.
+- The binder's body placeholder at 30 lets it extend to the right, so `∃x. A ∧ B` is not
+  `(∃x. A) ∧ B` and needs no parentheses, and `A ∨ ∃x. B` needs none either since `∨`'s right
+  placeholder asks for 30.
+- The judgement at 25 sits below every connective, so `H ∧ K ⊢ H` needs none. Outermost judgements
+  such as `⊢` and `⊨` can otherwise be left at the default; they only need a level once their
+  arguments are templates annotated below 50.
+- Left-associative operators put the higher level on the right: `a ∪ b ∪ c` is `(a ∪ b) ∪ c` without
+  parentheses, and `a ∪ (b ∪ c)` keeps them.
+
+Where Lean has notation for the same operator the level usually restates its Lean precedence, but it
+is given separately because the LaTeX shape need not follow the Lean notation. The application
+template of `latex.additionalProps` is a template like any other, so `"@25 #2:26 \\models #1:26"`
+typesets `s ⊨ H ∧ K` without parentheses. Write templates without outer parentheses and let the
+renderer add them.
+
+Two limitations follow from this being a plain comparison of levels, without Lean's tracking of
+where a binder's body ends. A binder in the last position of an operator is parenthesised even
+though it could not be misread, so `A ∧ ∃x. P` renders as `A ∧ (∃x. P)` unless `∧`'s right
+placeholder asks for 30 or less. Conversely, a binder in a non-final position asks for parentheses
+only through its level: if a judgement's left placeholder asks for a level at or below 30, an `∃`
+there is printed bare and reads as if its body ran to the right edge. Keep binders at 30 and give
+every non-final placeholder of an infix or judgement template a level above 30 to avoid this.
 
 Rendering needs `latex` (with `amsmath`, `amssymb`,
 `mathpartir`, `xcolor`, `standalone`) and `dvisvgm` on `PATH`; SVGs are cached in
