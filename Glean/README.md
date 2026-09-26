@@ -76,14 +76,16 @@ still generated.
 `latex.definitions` (default `{}`) maps fully qualified constant names to LaTeX templates, where
 `#1`, `#2`, ... are the explicit arguments. `latex.metavariables` (default `[]`) lists name
 prefixes; a bound variable such as `σ1` whose name is a listed prefix followed by digits is typeset as
-the prefix with the digits as a subscript. When non-empty, theorem statements (and definitions whose type
-mentions a mapped constant) are rendered as math, and the source moves into a collapsed "Source" block.
-A definition that has its own template is instead shown unfolded, as its template applied to its
-parameters, then `≜`, then the rendered body; definitions by pattern matching, recursion, or with
-auxiliary proof terms fall back to showing their type.
+the prefix with the digits as a subscript. When non-empty, every theorem statement is rendered as
+math and its source moves into a collapsed "Source" block. A definition is rendered only in two
+cases: if it has its own template it is shown unfolded, as the template applied to its parameters,
+then `≜`, then the rendered body (definitions by pattern matching, recursion, or with auxiliary
+proof terms fall back to showing their type); otherwise, if its type mentions a mapped constant, its
+type is shown. A definition with neither, such as a predicate you have not given notation for, keeps
+its plain source, so add a template for every definition you want typeset.
 `latex.additionalProps` (default `[]`) lists fully qualified names of types to treat like
 propositions, such as an `HProp := State → Prop` of assertions: a definition whose body has such a
-type is unfolded with the body's own parameters applied on the left, so `⌜P⌝(s) ≜ …`, and its body
+type is unfolded with the body's own parameters applied on the left, so `⌜P⌝\ap s ≜ …`, and its body
 can then be drawn as an inference rule. `latex.collapseSource` (default `true`) set to `false`
 shows the "Source" block expanded. Unmapped
 constants print as `\mathrm{Name}`, and application is written by juxtaposition with a thin space, `f\ap a\ap b`,
