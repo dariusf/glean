@@ -65,6 +65,7 @@ structure Site where
   slugMap : Std.HashMap String String
   libRoots : Std.HashSet String := {}
   collapseSource : Bool := true
+  latex : Bool := false
 
 def Site.own (site : Site) (n : String) : Option Decl :=
   site.byName.get? n <|> (site.aliasOwner.get? n).bind (site.byName.get? ·)
@@ -335,6 +336,9 @@ private def viewSelect (opts : List (String × String)) : String :=
   let os := String.join (opts.map fun (v, l) => s!"<option value=\"{v}\">{l}</option>")
   s!"<label>View <select id=\"view\">{os}</select></label>"
 
+private def sourceToggle (site : Site) : String :=
+  if site.latex then s!"<button id=\"srctoggle\" type=\"button\">{if site.collapseSource then "Expand sources" else "Collapse sources"}</button>" else ""
+
 private def pane (view inner : String) : String :=
   s!"<div data-viewpane=\"{view}\">{inner}</div>"
 
@@ -346,7 +350,7 @@ def filePage (site : Site) (root m : String) : String :=
     s!"<div class=\"cols\"><section class=\"card\"><h2>Files used</h2>{fileList site root ((site.modDeps.get? m).getD #[])}</section>" ++
     s!"<section class=\"card\"><h2>Used by files</h2>{fileList site root ((site.modRev.get? m).getD #[])}</section></div>"
   s!"<h1>{kindPill "file"}{escHtml m}</h1>" ++
-  s!"<div class=\"toolbar\">{viewSelect [("ordered", "Ordered declarations"), ("grouped", "Group by definition")]}</div>" ++
+  s!"<div class=\"toolbar\">{viewSelect [("ordered", "Ordered declarations"), ("grouped", "Group by definition")]}{sourceToggle site}</div>" ++
   "<div class=\"withside\"><div class=\"sidemain\"><div id=\"listing\">" ++
   pane "ordered" (orderedListing site root ds true) ++
   pane "grouped" (groupedListing site root ds (srcBlock site root) (srcBlock site root) "g-") ++
@@ -360,7 +364,7 @@ def globalOrdered (site : Site) (root : String) (src : Bool) : String :=
 
 def declsPage (site : Site) (root : String) : String :=
   s!"<h1>{kindPill "index"}Declarations</h1>" ++
-  s!"<div class=\"toolbar\"><input id=\"search\" placeholder=\"Filter declarations\">{viewSelect [("ordered", "By file"), ("grouped", "Group by definition")]}</div>" ++
+  s!"<div class=\"toolbar\"><input id=\"search\" placeholder=\"Filter declarations\">{viewSelect [("ordered", "By file"), ("grouped", "Group by definition")]}{sourceToggle site}</div>" ++
   "<div id=\"listing\" data-biglist=\"1\" style=\"display:none\">" ++
   pane "ordered" (globalOrdered site root false) ++
   pane "grouped" (groupedListing site root site.decls (stmtBlock site root) (fun _ => "") "g-") ++
@@ -523,6 +527,11 @@ def graphJs (site : Site) (forceDirected : Bool) : String :=
   if forceDirected then forceGraphJs site else mermaidGraphJs site
 
 def appJs : String := r##"// View toggles: <select id="view"> shows the matching [data-viewpane].
+const st=document.getElementById('srctoggle');
+if(st){const srcs=()=>[...document.querySelectorAll('details.src')];
+const lbl=()=>{st.textContent=srcs().some(d=>d.open)?'Collapse sources':'Expand sources'};
+st.onclick=()=>{const open=!srcs().some(d=>d.open);for(const d of srcs())d.open=open;lbl()};
+document.addEventListener('toggle',lbl,true);lbl()}
 const v=document.getElementById('view');
 if(v){const upd=()=>{for(const el of document.querySelectorAll('[data-viewpane]'))el.style.display=el.dataset.viewpane===v.value?'':'none'};v.onchange=upd;upd()}
 // Filter box: hides [data-name] rows in #listing; prunes and opens tree nodes.
