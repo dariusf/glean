@@ -74,7 +74,12 @@ still generated.
 ```
 
 `latex.definitions` (default `{}`) maps fully qualified constant names to LaTeX templates, where
-`#1`, `#2`, ... are the explicit arguments. `latex.metavariables` (default `[]`) lists name
+`#1`, `#2`, ... are the explicit arguments. When an argument is a function written as a lambda,
+such as the body of a binder-like constant, `#1:x` gives its bound variables separated by thin
+spaces, `#1:x1`, `#1:x2`, ... give them one at a time, and `#1:b` gives its body with those
+variables free, so `hexists (fun v q => P)` with the template `\exists\,#1:x.\ #1:b` is typeset as
+`∃ v q. P`. If such an argument is not written as a lambda (for instance a bare variable `J`), the
+template is not used and the application is typeset plainly. `latex.metavariables` (default `[]`) lists name
 prefixes; a bound variable such as `σ1` whose name is a listed prefix followed by digits is typeset as
 the prefix with the digits as a subscript. When non-empty, every theorem statement is rendered as
 math and its source moves into a collapsed "Source" block. A definition is rendered only in two

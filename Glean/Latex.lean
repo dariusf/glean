@@ -132,7 +132,7 @@ partial def delimitedHoles (tmpl : String) : Array Nat :=
     | c :: cs => loop cs (opens.contains c) acc
   loop tmpl.toList false #[]
 
-partial def applyTemplate (tmpl : String) (argStrs : Array String) : String :=
+partial def applyTemplate (tmpl : String) (pieces : Std.HashMap String String) : String :=
   let rec loop (chars : List Char) (acc : String) : String :=
     match chars with
     | [] => acc
@@ -140,9 +140,13 @@ partial def applyTemplate (tmpl : String) (argStrs : Array String) : String :=
       let (digits, rest) := cs.span (·.isDigit)
       if digits.isEmpty then loop cs (acc ++ "#")
       else
-        let n := (String.ofList digits).toNat!
-        let replacement := if n > 0 && n <= argStrs.size then argStrs[n-1]! else "#" ++ String.ofList digits
-        loop rest (acc ++ replacement)
+        let key := String.ofList digits
+        let (key, rest) := match rest with
+          | ':' :: r =>
+            let (sel, r') := r.span (·.isAlphanum)
+            if sel.isEmpty then (key, rest) else (key ++ ":" ++ String.ofList sel, r')
+          | _ => (key, rest)
+        loop rest (acc ++ ((pieces.get? key).getD ("#" ++ key)))
     | c :: cs => loop cs (acc.push c)
   loop tmpl.toList ""
 
@@ -296,9 +300,26 @@ where
             return ← application p (fallbackName n) filteredArgs
           else
             let delimited := delimitedHoles lat
-            let argStrs ← (filteredArgs.extract 0 arity).mapIdxM fun i a =>
-              go a (if delimited.contains (i + 1) then quant else atom)
-            let body := applyTemplate lat argStrs
+            let mut pieces : Std.HashMap String String := {}
+            let mut missingBinder := false
+            for i in [0:arity] do
+              let a := filteredArgs[i]!
+              let k := toString (i + 1)
+              pieces := pieces.insert k (← go a (if delimited.contains (i + 1) then quant else atom))
+              if (lat.splitOn ("#" ++ k ++ ":")).length > 1 then
+                if !a.isLambda then missingBinder := true
+                let (names, inner) ← lambdaTelescope a fun fvars b => do
+                  let names ← fvars.mapM fun fv => do
+                    let decl ← fv.fvarId!.getDecl
+                    pure (binderName decl.userName)
+                  pure (names, ← go b quant)
+                pieces := pieces.insert (k ++ ":x") (String.intercalate "\\," names.toList)
+                pieces := pieces.insert (k ++ ":b") inner
+                for j in [0:names.size] do
+                  pieces := pieces.insert (k ++ ":x" ++ toString (j + 1)) names[j]!
+            if missingBinder then
+              return ← application p (fallbackName n) filteredArgs
+            let body := applyTemplate lat pieces
             let extra := filteredArgs.extract arity filteredArgs.size
             if extra.isEmpty then
               return if p == atom && !templateAtomic lat then "(" ++ body ++ ")" else body
