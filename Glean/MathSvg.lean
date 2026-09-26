@@ -15,7 +15,8 @@ def document (latex : String) : String :=
   "\\definecolor{fg}{HTML}{C9D1D9}\n" ++
   "\\newcommand*{\\ap}{\\mkern3mu}\n" ++
   "\\begin{document}\n" ++
-  "\\color{fg}$\\displaystyle " ++ latex ++ "$\n" ++
+  (if latex.startsWith "\\begin{mathpar}" then "\\color{fg}" ++ latex ++ "\n"
+   else "\\color{fg}$\\displaystyle " ++ latex ++ "$\n") ++
   "\\end{document}\n"
 
 def hexHash (s : String) : String :=

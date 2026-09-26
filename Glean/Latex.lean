@@ -387,6 +387,34 @@ def definitionToLatex (mapping : NameMap String) (config : LatexConfig) (n : Nam
       let rhsStr ← exprToLatex mapping { config with useInferRule := bodyIsProp, printForall := !bodyIsProp } body
       return some (lhsStr ++ " \\triangleq " ++ rhsStr)
 
+def ruleLabel (s : String) : String :=
+  if s.all (fun (c : Char) => c.toNat < 128) then s.replace "_" "\\_"
+  else "$" ++ unicodeToLatex s ++ "$"
+
+def inductiveToLatex (mapping : NameMap String) (config : LatexConfig) (n : Name) (levels : List Level) :
+    MetaM (Option String) := do
+  let some (.inductInfo iv) := (← getEnv).find? n | return none
+  let iType := iv.type.instantiateLevelParams iv.levelParams levels
+  let isPropValued ← forallTelescope iType fun _ body => return body.isProp
+  if !isPropValued then return none
+  let cfg := { config with useInferRule := false }
+  forallBoundedTelescope iType iv.numParams fun params _ => do
+    let rules ← iv.ctors.mapM fun c => do
+      let some cinfo := (← getEnv).find? c | throwError "unknown constructor {c}"
+      let cType ← instantiateForall (cinfo.type.instantiateLevelParams cinfo.levelParams levels) params
+      forallTelescope cType fun xs conc => do
+        let mut prems : Array String := #[]
+        for i in [0:xs.size] do
+          let x := xs[i]!
+          let later ← (xs.extract (i + 1) xs.size).anyM fun y => return (← inferType y).containsFVar x.fvarId!
+          if later || conc.containsFVar x.fvarId! then continue
+          prems := prems.push (← exprToLatex mapping cfg (← inferType x))
+        let concStr ← exprToLatex mapping cfg conc
+        let premStr := if prems.isEmpty then "\\ " else String.intercalate " \\\\ " prems.toList
+        let label := ruleLabel ((cleanName c).toString (escape := false) |>.splitOn "." |>.getLast!)
+        return "\\inferrule[" ++ label ++ "]{" ++ premStr ++ "}{" ++ concStr ++ "}"
+    return some ("\\begin{mathpar} " ++ String.intercalate " \\and " rules ++ " \\end{mathpar}")
+
 def parseMapping (j : Json) : Except String Mapping := do
   match j.getObjVal? "latex" with
   | .error _ => return {}

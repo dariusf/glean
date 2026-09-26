@@ -99,6 +99,12 @@ inline with `\to`. This applies to theorem statements and to the body of an unfo
 when that body is a proposition; the body of a non-propositional definition, and everything nested
 inside a formula, is always written inline.
 
+Inductive predicates (inductive types whose type ends in `Prop`) are shown as a `mathpar` block
+with one inference rule per constructor, labelled with the constructor's name. The inductive's
+parameters and any binders that later binders or the conclusion depend on are read as implicitly
+quantified; the remaining hypotheses become the rule's premises, and the constructor's result type
+is its conclusion. Inductive types that are not propositions are shown as source only.
+
 Parentheses are inserted only where the notation would otherwise be ambiguous. Built-in operators
 follow the usual precedence (application binds tightest, then `^`, `·`, `+`, relations such as `=`
 and `≤`, `→`, and finally binders `∀`/`∃`/`λ`), and a subformula is parenthesised when it is looser
