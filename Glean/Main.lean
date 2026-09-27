@@ -140,7 +140,7 @@ unsafe def run (args : List String) : IO UInt32 := do
       | .error e => throw (IO.userError s!"Invalid config: {e}")
     | none => pure {}
   let latexJson := if latexMapping.definitions.isEmpty then none else config.latex.map fun
-    | .obj kvs => .obj (kvs.erase "collapseSource")
+    | .obj kvs => .obj ((kvs.erase "collapseSource").erase "analyzeTexLivePackages")
     | j => j
   let latexCfg ← match latexJson with
     | some j =>
@@ -204,6 +204,11 @@ unsafe def run (args : List String) : IO UInt32 := do
   if latexCfg.isSome then
     let svgCache : FilePath := ".lake/build/glean/svg"
     IO.FS.createDirAll svgCache
+    if latexMapping.analyzeTexLivePackages then
+      let pkgFile : FilePath := ".lake/build/glean/texlive-packages.txt"
+      let pkgs ← MathSvg.texlivePackages ".lake/build/glean/tmp-texlive"
+      discard <| writeIfChanged pkgFile ("\n".intercalate pkgs.toList ++ "\n")
+      IO.println s!"TeX Live packages: {pkgs.size} written to {pkgFile}"
     let mut pending : Array (String × String) := #[]
     let mut seen : Std.HashSet String := {}
     let mut cached := 0

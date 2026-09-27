@@ -18,6 +18,7 @@ structure Mapping where
   definitions : NameMap (Array String) := {}
   metavars : Array String := #[]
   collapseSource : Bool := true
+  analyzeTexLivePackages : Bool := false
   additionalProps : Array Name := #[]
   applications : NameMap String := {}
 
@@ -631,6 +632,10 @@ def parseMapping (j : Json) : Except String Mapping := do
       | .error _ | .ok .null => pure true
       | .ok (.bool b) => pure b
       | .ok _ => throw "latex.collapseSource: expected a boolean"
+    let analyzeTexLivePackages ← match l.getObjVal? "analyzeTexLivePackages" with
+      | .error _ | .ok .null => pure false
+      | .ok (.bool b) => pure b
+      | .ok _ => throw "latex.analyzeTexLivePackages: expected a boolean"
     let (additionalProps, applications) ← match l.getObjVal? "additionalProps" with
       | .error _ | .ok .null => pure (#[], {})
       | .ok (.arr xs) => do
@@ -641,7 +646,7 @@ def parseMapping (j : Json) : Except String Mapping := do
           let t ← v.getStr? |>.mapError (fun _ => s!"latex.additionalProps.{k}: expected a string")
           return (names.push k.toName, apps.insert k.toName t)
       | .ok _ => throw "latex.additionalProps: expected an array of type names or an object mapping type names to templates"
-    return { definitions, metavars, collapseSource, additionalProps, applications }
+    return { definitions, metavars, collapseSource, analyzeTexLivePackages, additionalProps, applications }
   | .ok _ => throw "latex: expected an object with definitions and metavariables"
 
 end Glean.Latex

@@ -264,3 +264,43 @@ fragment deep links to declarations work natively.
 - `Glean/Render.lean` — highlighting, derived site data, page rendering, client JS.
 - `Glean/Main.lean` — CLI, fragment assembly, CSS, site writing.
 - `Glean/lakefile.lean` — package, executables, facets.
+
+# Finding the packages
+
+There are a few ways, from quickest to most thorough.
+
+**1. Ask `tlmgr` by file name.** This works even if you don't have the package installed:
+
+```sh
+tlmgr search --global --file zi4.sty
+# inconsolata:
+#     texmf-dist/tex/latex/inconsolata/zi4.sty
+```
+
+The name before the colon is what goes in your `packages:` list.
+
+**2. Use `kpsewhich` on a machine where it already compiles.** If your local TeX (MacTeX, full TeX Live) builds the document, this shows where the file lives:
+
+```sh
+kpsewhich zi4.sty
+# .../texmf-dist/tex/latex/inconsolata/zi4.sty
+```
+
+The directory name is usually, but not always, the TeX Live package name.
+
+**3. Check CTAN.** Search the package on ctan.org. Its page has a "Contained in" line saying something like "TeX Live as inconsolata".
+
+**4. Find everything your document loads.** This is the most reliable way to catch dependencies you didn't know about. Add `\listfiles` before `\documentclass`, compile locally, and the log ends with every `.sty`/`.cls`/`.def` file used. Or compile with `latex -recorder foo.tex` and read the `.fls` file. Then map each file to its TeX Live package:
+
+```sh
+latex -recorder foo.tex
+grep INPUT foo.fls | grep texmf-dist | sed 's|.*/||' | sort -u \
+  | xargs -n1 tlmgr search --global --file 2>/dev/null \
+  | grep -E '^[a-z0-9-]+:$' | tr -d ':' | sort -u
+```
+
+That prints a near-complete package list you can paste into `packages:`.
+
+**5. Let CI tell you.** If you skip all of the above, CI will do it. Each failed run reports one missing file (`! LaTeX Error: File 'x.sty' not found`). Look it up with method 1, add it, and rerun. It's slow, but it always works in the end.
+
+Tip: once the list grows, move it into a file (e.g. `.github/tl_packages`, one package per line) and use `package_file: .github/tl_packages` instead of the inline list.
