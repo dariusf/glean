@@ -200,6 +200,7 @@ unsafe def run (args : List String) : IO UInt32 := do
           | .error e => throw <| IO.userError s!"Invalid declaration in {file}: {e}"
         let imports := (parsed.getObjValAs? (Array String) "imports").toOption.getD #[]
         moduleImports := moduleImports.push (mod.toString, imports)
+  let mut latexFailed := 0
   if latexCfg.isSome then
     let svgCache : FilePath := ".lake/build/glean/svg"
     IO.FS.createDirAll svgCache
@@ -237,6 +238,7 @@ unsafe def run (args : List String) : IO UInt32 := do
     pruneFiles (out / "svg") keep
     let nFailed ← failed.get
     IO.println s!"LaTeX: {pending.size - nFailed} compiled, {nFailed} failed, {cached} cached"
+    latexFailed := nFailed
     decls := decls.map fun d => { d with svg := d.latex.map MathSvg.fileName }
   else
     decls := decls.map fun d => { d with latex := none }
@@ -281,6 +283,9 @@ unsafe def run (args : List String) : IO UInt32 := do
   pruneDir (out / "file") (Std.HashSet.ofArray (site.mods.map site.slug))
   IO.println s!"Rendered {decls.size} declarations across {site.mods.size} files: {written} pages written, {skipped} unchanged"
   IO.println s!"Preview with: python3 -m http.server 8000 -d {out}"
+  if latexFailed > 0 then
+    IO.eprintln s!"error: {latexFailed} LaTeX compilations failed"
+    return 1
   return 0
 where
   dedupModules (decls : Array Decl) : Array String := Id.run do
